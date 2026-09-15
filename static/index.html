@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drive Cutter</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0a0a0a;
+    --surface:  #131313;
+    --raised:   #1a1a1a;
+    --border:   #252525;
+    --border-h: #333;
+    --text:     #d4d4d4;
+    --text-2:   #737373;
+    --text-3:   #4a4a4a;
+    --accent:   #5b9cf5;
+    --accent-d: #3d7ae0;
+    --accent-bg:#5b9cf510;
+    --red:      #f06060;
+    --green:    #4ade80;
+    --green-d:  #16a34a;
+    --orange:   #f59e0b;
+    --mono:     'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    --sans:     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --radius:   8px;
+    --transition: 150ms ease;
+  }
+
+  html { font-size: 15px; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- Layout ---- */
+  .shell {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  /* ---- Header ---- */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+  .header-left h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .header-left p {
+    font-size: 0.8rem;
+    color: var(--text-2);
+    max-width: 380px;
+  }
+
+  /* ---- Buttons ---- */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--sans);
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--raised);
+    color: var(--text);
+    cursor: pointer;
+    transition: all var(--transition);
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--border-h); background: #222; }
+  .btn:active { transform: scale(0.97); }
+
+  .btn-accent {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #000;
+    font-weight: 600;
+  }
+  .btn-accent:hover { background: var(--accent-d); border-color: var(--accent-d); }
+  .btn-accent:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-sm { padding: 5px 12px; font-size: 0.75rem; }
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-2);
+  }
+  .btn-ghost:hover { color: var(--text); background: var(--raised); }
+
+  /* ---- Source badge ---- */
+  .source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .source-badge.drive { background: #1a2a1a; color: #4ade80; }
+  .source-badge.drive-public { background: #1a2a2a; color: #5bc5f5; }
+  .source-badge.wetransfer { background: #2a2a1a; color: var(--orange); }
+
+  /* ---- Connect prompt ---- */
+  .connect-prompt {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 24px;
+  }
+  .connect-prompt p {
+    flex: 1;
+    font-size: 0.8rem;
+    color: var(--text-2);
+  }
+
+  /* ---- Search ---- */
+  .search-bar {
+    position: relative;
+    margin-bottom: 16px;
+  }
+  .search-bar input {
+    width: 100%;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    padding: 10px 14px 10px 38px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    outline: none;
+    transition: border-color var(--transition);
+  }
+  .search-bar input:focus { border-color: var(--accent); }
+  .search-bar input::placeholder { color: var(--text-3); }
+  .search-bar svg {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    color: var(--text-3);
+    pointer-events: none;
+  }
+
+  /* ---- Transfer header ---- */
+  .transfer-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    margin-bottom: 8px;
+  }
+  .transfer-header .name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #eee;
+    flex: 1;
+  }
+  .transfer-header .count {
+    font-size: 0.72rem;
+    color: var(--text-2);
+    font-family: var(--mono);
+  }
+
+  /* ---- File list ---- */
+  .file-list { display: flex; flex-direction: column; gap: 2px; }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background var(--transition);
+  }
+  .file-item:hover { background: var(--surface); }
+  .file-item.active { background: var(--accent-bg); }
+
+  .file-icon {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: var(--raised);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .file-icon svg { width: 16px; height: 16px; color: var(--text-2); }
+
+  .file-meta { flex: 1; min-width: 0; }
+  .file-name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #eee;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-sub {
+    font-size: 0.72rem;
+    color: var(--text-2);
+    font-family: var(--mono);
+    display: flex;
+    gap: 10px;
+    margin-top: 2px;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 16px;
+    color: var(--text-2);
+    font-size: 0.8rem;
+  }
+
+  /* ---- Cut panel ---- */
+  .cut-panel {
+    margin-top: 32px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .cut-panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  .cut-panel-head .name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #eee;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .cut-panel-head .meta {
+    font-size: 0.72rem;
+    color: var(--text-2);
+    font-family: var(--mono);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .cut-panel-body { padding: 20px 18px; }
+
+  .time-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .time-field label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-2);
+    margin-bottom: 6px;
+  }
+  .time-field input {
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    outline: none;
+    transition: border-color var(--transition);
+  }
+  .time-field input:focus { border-color: var(--accent); }
+  .time-field input::placeholder { color: var(--text-3); }
+
+  .segment {
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .segment:last-child { border-bottom: none; margin-bottom: 4px; }
+  .segment-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .segment-label {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-2);
+  }
+
+  .cut-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .progress-text {
+    font-size: 0.8rem;
+    color: var(--text-2);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Result ---- */
+  .result-card {
+    margin-top: 16px;
+    padding: 14px 18px;
+    background: #0d1a0d;
+    border: 1px solid #1a3a1a;
+    border-radius: var(--radius);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .result-info { flex: 1; min-width: 0; }
+  .result-info .name {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--green);
+  }
+  .result-info .stats {
+    font-size: 0.72rem;
+    color: var(--text-2);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+  .btn-download {
+    background: var(--green-d);
+    border-color: var(--green-d);
+    color: #fff;
+    font-weight: 600;
+  }
+  .btn-download:hover { background: #15803d; border-color: #15803d; }
+
+  /* ---- Error ---- */
+  .error-msg {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: #1a0d0d;
+    border: 1px solid #3a1a1a;
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    color: var(--red);
+  }
+  .error-msg pre {
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* ---- How it works ---- */
+  .how-it-works {
+    margin-top: 56px;
+    padding-top: 32px;
+    border-top: 1px solid var(--border);
+  }
+  .how-it-works h3 {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-2);
+    margin-bottom: 14px;
+  }
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .step {
+    padding: 14px;
+    background: var(--surface);
+    border-radius: var(--radius);
+  }
+  .step .num {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--text-3);
+    margin-bottom: 6px;
+  }
+  .step .label {
+    font-size: 0.8rem;
+    color: var(--text);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .step .desc {
+    font-size: 0.72rem;
+    color: var(--text-2);
+    line-height: 1.45;
+  }
+
+  @media (max-width: 600px) {
+    .shell { padding: 32px 16px 64px; }
+    .header { flex-direction: column; gap: 12px; }
+    .time-row { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr; }
+    .result-card { flex-direction: column; align-items: stretch; }
+  }
+</style>
+</head>
+<body>
+<div class="shell" id="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>Drive Cutter</h1>
+      <p>Cut segments from Google Drive and WeTransfer videos without downloading the full file.</p>
+    </div>
+    <div id="auth-area"></div>
+  </div>
+
+  <!-- Main content -->
+  <div id="main"></div>
+
+  <!-- How it works -->
+  <div class="how-it-works">
+    <h3>How it works</h3>
+    <div class="steps">
+      <div class="step">
+        <div class="num">01</div>
+        <div class="label">Range requests</div>
+        <div class="desc">FFmpeg asks the server for specific byte ranges instead of the entire file, using HTTP 206 Partial Content.</div>
+      </div>
+      <div class="step">
+        <div class="num">02</div>
+        <div class="label">Input seeking</div>
+        <div class="desc">Placing the seek flag before the input tells FFmpeg to jump directly to your timestamp before downloading.</div>
+      </div>
+      <div class="step">
+        <div class="num">03</div>
+        <div class="label">Stream copy</div>
+        <div class="desc">The segment is copied without re-encoding, so the output is fast and lossless. Only keyframe-aligned cuts.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let state = {
+  authenticated: false,
+  files: [],
+  searching: false,
+  selectedFile: null,
+  segments: [],
+  segmentCounter: 0,
+  error: null,
+  wtContext: null,
+  searchQuery: '',
+};
+
+const $ = (sel) => document.querySelector(sel);
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok && !data.error) throw new Error(`HTTP ${res.status}`);
+  return data;
+};
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+function render() {
+  renderAuth();
+  renderMain();
+}
+
+function renderAuth() {
+  const el = $('#auth-area');
+  if (state.authenticated) {
+    el.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="logout()">Disconnect</button>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function renderMain() {
+  const el = $('#main');
+  el.innerHTML = renderWorkspace();
+}
+
+function renderWorkspace() {
+  const fileListHtml = state.searching
+    ? `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div></div>`
+    : state.files.length
+      ? state.files.map(f => renderFileItem(f)).join('')
+      : `<div class="empty-state">Paste a Google Drive or WeTransfer link to get started</div>`;
+
+  const panelHtml = state.selectedFile ? renderCutPanel() : '';
+  const errorHtml = state.error && !state.selectedFile
+    ? `<div class="error-msg">${esc(state.error.message)}</div>` : '';
+
+  const connectHtml = !state.authenticated
+    ? `<div class="connect-prompt">
+        <p>Connect Google Drive to search your own files by name</p>
+        <button class="btn btn-sm" onclick="startAuth()">Connect Drive</button>
+      </div>`
+    : '';
+
+  const transferHdr = state.wtContext
+    ? `<div class="transfer-header">
+        <span class="source-badge wetransfer">WeTransfer</span>
+        <span class="name">${esc(state.wtContext.display_name || 'Transfer')}</span>
+        <span class="count">${state.files.length} files</span>
+      </div>`
+    : '';
+
+  return `
+    <div class="search-bar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input type="text" id="search-input" value="${esc(state.searchQuery)}"
+             placeholder="Paste a Drive or WeTransfer link, or search your Drive…"
+             onkeydown="if(event.key==='Enter')searchFiles()" />
+    </div>
+    ${connectHtml}
+    ${errorHtml}
+    ${transferHdr}
+    <div class="file-list">${fileListHtml}</div>
+    ${panelHtml}
+  `;
+}
+
+function renderFileItem(f) {
+  const active = state.selectedFile?.id === f.id ? 'active' : '';
+  const dur = f.videoMediaMetadata?.durationMillis
+    ? formatDuration(parseInt(f.videoMediaMetadata.durationMillis))
+    : '';
+  const size = f.sizeFormatted || '';
+  const res = f.videoMediaMetadata
+    ? `${f.videoMediaMetadata.width || '?'}×${f.videoMediaMetadata.height || '?'}`
+    : '';
+  const metaParts = [size, dur, res].filter(Boolean);
+
+  const src = f.source || 'drive';
+  const badgeClass = src === 'wetransfer' ? 'wetransfer'
+    : src === 'drive_public' ? 'drive-public' : 'drive';
+  const badgeText = src === 'wetransfer' ? 'WT'
+    : src === 'drive_public' ? 'Public' : 'Drive';
+
+  return `
+    <div class="file-item ${active}" onclick="selectFile('${f.id}')">
+      <div class="file-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <polygon points="5 3 19 3 19 21 5 21"/>
+          <polygon points="10 9 10 15 15 12"/>
+        </svg>
+      </div>
+      <div class="file-meta">
+        <div class="file-name">${esc(f.name)}</div>
+        <div class="file-sub">
+          <span class="source-badge ${badgeClass}">${badgeText}</span>
+          ${metaParts.map(p => `<span>${p}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCutPanel() {
+  const f = state.selectedFile;
+  const dur = f.videoMediaMetadata?.durationMillis
+    ? formatDuration(parseInt(f.videoMediaMetadata.durationMillis))
+    : 'unknown';
+
+  const src = f.source || 'drive';
+  const badgeClass = src === 'wetransfer' ? 'wetransfer'
+    : src === 'drive_public' ? 'drive-public' : 'drive';
+  const badgeText = src === 'wetransfer' ? 'WeTransfer'
+    : src === 'drive_public' ? 'Public Drive' : 'Drive';
+
+  const segmentsHtml = state.segments.map((seg, i) => renderSegment(seg, i)).join('');
+
+  const anyCutting = state.segments.some(s => s.cutting);
+  const uncutSegs = state.segments.filter(s => !s.result && !s.cutting);
+
+  let actionsHtml;
+  if (anyCutting) {
+    actionsHtml = `<span class="progress-text"><span class="spinner"></span>Cutting segments…</span>`;
+  } else {
+    const cutLabel = uncutSegs.length === 0
+      ? null
+      : uncutSegs.length === state.segments.length && state.segments.length === 1
+        ? 'Cut &amp; download'
+        : `Cut ${uncutSegs.length} segment${uncutSegs.length !== 1 ? 's' : ''}`;
+
+    actionsHtml = `
+      ${cutLabel ? `<button class="btn btn-accent" onclick="cutAllSegments()">${cutLabel}</button>` : ''}
+      ${!anyCutting ? `<button class="btn btn-ghost btn-sm" onclick="addSegment()">+ Add segment</button>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="clearSelection()">Cancel</button>
+    `;
+  }
+
+  return `
+    <div class="cut-panel">
+      <div class="cut-panel-head">
+        <span class="name">${esc(f.name)}</span>
+        <span class="meta">
+          <span class="source-badge ${badgeClass}">${badgeText}</span>
+          ${f.sizeFormatted || ''} · ${dur}
+        </span>
+      </div>
+      <div class="cut-panel-body">
+        ${segmentsHtml}
+        <div class="cut-actions">${actionsHtml}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSegment(seg, index) {
+  const canRemove = state.segments.length > 1 && !seg.cutting;
+  const label = state.segments.length > 1 ? `Segment ${index + 1}` : 'Time range';
+
+  if (seg.result) {
+    const r = seg.result;
+    return `
+      <div class="segment">
+        <div class="segment-header">
+          <span class="segment-label">${label} · ${esc(seg.start)} → ${esc(seg.end)}</span>
+          ${canRemove ? `<button class="btn btn-ghost btn-sm" onclick="removeSegment(${seg.id})">×</button>` : ''}
+        </div>
+        <div class="result-card">
+          <div class="result-info">
+            <div class="name">Ready</div>
+            <div class="stats">${r.sizeFormatted} · ${r.elapsed}s</div>
+          </div>
+          <a href="${r.download_url}" download class="btn btn-download btn-sm">Download</a>
+        </div>
+      </div>
+    `;
+  }
+
+  if (seg.cutting) {
+    return `
+      <div class="segment">
+        <div class="segment-header">
+          <span class="segment-label">${label} · ${esc(seg.start)} → ${esc(seg.end)}</span>
+        </div>
+        <span class="progress-text"><span class="spinner"></span>Cutting…</span>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="segment">
+      <div class="segment-header">
+        <span class="segment-label">${label}</span>
+        ${canRemove ? `<button class="btn btn-ghost btn-sm" onclick="removeSegment(${seg.id})">×</button>` : ''}
+      </div>
+      <div class="time-row">
+        <div class="time-field">
+          <label>Start</label>
+          <input type="text" placeholder="00:00:00" value="${esc(seg.start)}"
+                 oninput="updateSegment(${seg.id},'start',this.value)" />
+        </div>
+        <div class="time-field">
+          <label>End</label>
+          <input type="text" placeholder="00:01:00" value="${esc(seg.end)}"
+                 oninput="updateSegment(${seg.id},'end',this.value)" />
+        </div>
+      </div>
+      ${seg.error ? `<div class="error-msg">${esc(seg.error.message || seg.error)}${seg.error.details ? `<pre>${esc(seg.error.details)}</pre>` : ''}</div>` : ''}
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+async function checkAuth() {
+  try {
+    const data = await api('/auth/status');
+    state.authenticated = data.authenticated;
+    render();
+    if (state.authenticated && new URLSearchParams(location.search).has('auth')) {
+      history.replaceState(null, '', '/');
+      searchFiles();
+    }
+  } catch { /* ignore */ }
+}
+
+async function startAuth() {
+  try {
+    const data = await api('/auth/start');
+    window.location.href = data.auth_url;
+  } catch (e) {
+    alert('Auth failed: ' + (e.message || e));
+  }
+}
+
+async function logout() {
+  await api('/auth/logout', { method: 'POST' });
+  state = {
+    authenticated: false, files: [], searching: false,
+    selectedFile: null, segments: [], segmentCounter: 0,
+    error: null, wtContext: null, searchQuery: '',
+  };
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// URL detection
+// ---------------------------------------------------------------------------
+function parseDriveIds(input) {
+  const re = /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/g;
+  const ids = [];
+  let m;
+  while ((m = re.exec(input)) !== null) ids.push(m[1]);
+  return ids;
+}
+
+function isWeTransferUrl(input) {
+  return /wetransfer\.com\/(previews|downloads)\//.test(input);
+}
+
+// ---------------------------------------------------------------------------
+// Search / resolve
+// ---------------------------------------------------------------------------
+async function searchFiles() {
+  const q = ($('#search-input')?.value || '').trim();
+  state.searchQuery = q;
+  if (!q) {
+    if (state.authenticated) {
+      await driveSearch('');
+    }
+    return;
+  }
+
+  state.searching = true;
+  state.selectedFile = null;
+  state.segments = [];
+  state.error = null;
+  state.wtContext = null;
+  render();
+
+  if (isWeTransferUrl(q)) {
+    await resolveWeTransfer(q);
+  } else if (parseDriveIds(q).length > 0) {
+    await resolveDriveLinks(parseDriveIds(q));
+  } else if (state.authenticated) {
+    await driveSearch(q);
+  } else {
+    state.searching = false;
+    state.error = { message: 'Connect Google Drive to search by name, or paste a share link' };
+    render();
+  }
+}
+
+async function resolveWeTransfer(url) {
+  try {
+    const data = await api('/wetransfer/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    state.wtContext = {
+      transfer_id: data.transfer_id,
+      security_hash: data.security_hash,
+      api_base: data.api_base,
+      display_name: data.display_name,
+    };
+    state.files = data.files.map(f => ({ ...f, source: 'wetransfer' }));
+  } catch (e) {
+    state.error = { message: e.message || 'Failed to resolve WeTransfer link' };
+    state.files = [];
+  }
+  state.searching = false;
+  render();
+}
+
+async function resolveDriveLinks(ids) {
+  const results = await Promise.allSettled(
+    ids.map(async (id) => {
+      // Try public access first
+      try {
+        const res = await fetch(`/drive/public-info/${id}`);
+        if (res.ok) return await res.json();
+      } catch {}
+      // Fall back to OAuth
+      if (state.authenticated) {
+        return await api(`/drive/file/${id}`);
+      }
+      throw new Error('not-accessible');
+    })
+  );
+
+  state.files = results
+    .filter(r => r.status === 'fulfilled')
+    .map(r => r.value);
+
+  // Tag files that came from OAuth (no source set) as "drive"
+  state.files.forEach(f => { if (!f.source) f.source = 'drive'; });
+
+  const failed = results.filter(r => r.status === 'rejected').length;
+  if (failed > 0 && state.files.length === 0) {
+    state.error = {
+      message: state.authenticated
+        ? `Could not access ${failed} file(s) — they may not be shared with your account`
+        : `Could not access ${failed} file(s) — try connecting Google Drive`,
+    };
+  } else if (failed > 0) {
+    state.error = { message: `Loaded ${state.files.length} file(s), ${failed} not accessible` };
+  }
+
+  state.searching = false;
+  state.wtContext = null;
+  render();
+}
+
+async function driveSearch(q) {
+  state.searching = true;
+  state.wtContext = null;
+  render();
+  try {
+    const data = await api(`/drive/search?q=${encodeURIComponent(q)}`);
+    state.files = (data.files || []).map(f => ({ ...f, source: 'drive' }));
+  } catch (e) {
+    state.files = [];
+    state.error = { message: e.message };
+  }
+  state.searching = false;
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// File selection & segments
+// ---------------------------------------------------------------------------
+function selectFile(id) {
+  state.selectedFile = state.files.find(f => f.id === id) || null;
+  state.segmentCounter = 1;
+  state.segments = [{ id: 1, start: '00:00:00', end: '', cutting: false, result: null, error: null }];
+  render();
+}
+
+function clearSelection() {
+  state.selectedFile = null;
+  state.segments = [];
+  render();
+}
+
+function addSegment() {
+  state.segmentCounter++;
+  state.segments.push({ id: state.segmentCounter, start: '00:00:00', end: '', cutting: false, result: null, error: null });
+  render();
+}
+
+function removeSegment(id) {
+  state.segments = state.segments.filter(s => s.id !== id);
+  render();
+}
+
+function updateSegment(id, field, value) {
+  const seg = state.segments.find(s => s.id === id);
+  if (seg) seg[field] = value;
+}
+
+// ---------------------------------------------------------------------------
+// Cut
+// ---------------------------------------------------------------------------
+async function cutAllSegments() {
+  const f = state.selectedFile;
+  if (!f) return;
+  const toCut = state.segments.filter(s => !s.result && !s.cutting && s.end);
+  if (toCut.length === 0) return;
+
+  const source = f.source || 'drive';
+
+  for (const seg of toCut) {
+    seg.cutting = true;
+    seg.error = null;
+    render();
+
+    try {
+      let cutBody = {
+        file_id: f.id,
+        start_time: seg.start || '00:00:00',
+        end_time: seg.end,
+        filename: f.name.replace(/\.[^.]+$/, ''),
+        source,
+      };
+
+      if (source === 'wetransfer' && state.wtContext) {
+        // Get a fresh download URL (10-min token expiry)
+        const urlData = await api('/wetransfer/download-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transfer_id: state.wtContext.transfer_id,
+            security_hash: state.wtContext.security_hash,
+            api_base: state.wtContext.api_base,
+            file_id: f.id,
+          }),
+        });
+        cutBody.direct_url = urlData.direct_link;
+      }
+
+      const data = await api('/cut', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cutBody),
+      });
+
+      if (data.success) {
+        seg.result = data;
+      } else {
+        seg.error = data;
+      }
+    } catch (e) {
+      seg.error = { message: e.message };
+    }
+    seg.cutting = false;
+    render();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+function formatSeconds(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return h > 0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+    : `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+function formatDuration(ms) {
+  return formatSeconds(ms / 1000);
+}
+
+function esc(s) {
+  const el = document.createElement('span');
+  el.textContent = s;
+  return el.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+checkAuth();
+setTimeout(async () => {
+  if (state.authenticated && state.files.length === 0) {
+    await driveSearch('');
+  }
+}, 200);
+</script>
+</body>
+</html>
