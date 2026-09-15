@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    width: 280px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 13px;
+    background: #131313;
+    color: #d4d4d4;
+    margin: 0;
+    padding: 14px;
+  }
+  h2 { font-size: 14px; font-weight: 600; color: #fff; margin: 0 0 8px; }
+  .status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.on { background: #4ade80; }
+  .dot.off { background: #f06060; }
+  .label { font-size: 12px; color: #999; }
+  .desc { font-size: 11px; color: #666; line-height: 1.4; margin-bottom: 10px; }
+  .btn {
+    display: block; width: 100%; padding: 8px; font-size: 12px; font-weight: 500;
+    background: #5b9cf5; color: #000; border: none; border-radius: 6px; cursor: pointer;
+  }
+  .btn:hover { background: #3d7ae0; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .open-link {
+    display: block; text-align: center; margin-top: 8px;
+    font-size: 11px; color: #5b9cf5; text-decoration: none;
+  }
+  .open-link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+  <h2>Drive Cutter</h2>
+  <div class="status">
+    <span class="dot" id="dot"></span>
+    <span class="label" id="status-text">Checking…</span>
+  </div>
+  <div class="desc">
+    Navigate to a Google Drive or WeTransfer page to see the cut panel.
+    The server starts automatically when needed.
+  </div>
+  <button class="btn" id="start-btn" disabled>Start Server</button>
+  <a class="open-link" href="http://127.0.0.1:8000" target="_blank" id="open-link" style="display:none">Open web UI →</a>
+
+  <script src="popup.js"></script>
+</body>
+</html>

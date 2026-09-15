@@ -1,58 +1,103 @@
 """
-Drive Cutter — Download only the segment you need from Google Drive videos.
-Uses FFmpeg's HTTP Range request support to avoid downloading full files.
+Drive Cutter — Cut segments from Google Drive / WeTransfer videos.
+Uses FFmpeg HTTP Range requests — only downloads the bytes you need.
 """
 
+import asyncio
 import os
 import re
-import subprocess
 import uuid
 import tempfile
 import time
 import json as _json
+import signal
+import threading
 import urllib.request
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-CLIENT_SECRETS_FILE = os.getenv("GOOGLE_CLIENT_SECRETS", "client_secret.json")
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
-REDIRECT_URI = os.getenv("REDIRECT_URI", f"http://localhost:{PORT}/oauth/callback")
+IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "600"))  # seconds, 0 = disabled
 
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "drive-cutter-output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Single-user session (local tool — not for production multi-user use)
-session: dict = {}
+DRIVE_PUBLIC_URL = (
+    "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t"
+)
 
 app = FastAPI(title="Drive Cutter")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "chrome-extension://*",
+        "http://localhost:*",
+        "http://127.0.0.1:*",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+static_dir = Path(__file__).parent / "static"
+if static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Idle shutdown
+# ---------------------------------------------------------------------------
+_last_activity = time.time()
+_idle_timer: threading.Timer | None = None
+
+
+def _touch():
+    global _last_activity
+    _last_activity = time.time()
+
+
+def _check_idle():
+    if IDLE_TIMEOUT <= 0:
+        return
+    idle = time.time() - _last_activity
+    if idle >= IDLE_TIMEOUT:
+        print(f"\n  Idle for {IDLE_TIMEOUT}s — shutting down.\n")
+        os.kill(os.getpid(), signal.SIGTERM)
+    else:
+        remaining = IDLE_TIMEOUT - idle
+        global _idle_timer
+        _idle_timer = threading.Timer(remaining + 1, _check_idle)
+        _idle_timer.daemon = True
+        _idle_timer.start()
+
+
+@app.middleware("http")
+async def activity_tracker(request: Request, call_next):
+    _touch()
+    return await call_next(request)
+
+
+@app.on_event("startup")
+async def _start_idle_watcher():
+    if IDLE_TIMEOUT > 0:
+        _check_idle()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _get_creds() -> Credentials:
-    if "credentials" not in session:
-        raise HTTPException(401, "Not authenticated")
-    return Credentials(**session["credentials"])
-
-
 def _time_to_seconds(t: str) -> float:
-    """Parse HH:MM:SS, MM:SS, or plain seconds into a float."""
     parts = str(t).strip().split(":")
     if len(parts) == 3:
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
@@ -76,11 +121,6 @@ def _format_bytes(n: int) -> str:
     return f"{n:.1f} PB"
 
 
-DRIVE_PUBLIC_URL = (
-    "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t"
-)
-
-
 def _fetch_json(url, data=None):
     body = _json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body)
@@ -102,125 +142,19 @@ def _parse_wetransfer_url(url):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Auth
+# Routes — Health
 # ---------------------------------------------------------------------------
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "2.0"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return Path("static/index.html").read_text()
-
-
-@app.get("/auth/status")
-async def auth_status():
-    return {"authenticated": "credentials" in session}
-
-
-@app.get("/auth/start")
-async def auth_start():
-    if not Path(CLIENT_SECRETS_FILE).exists():
-        raise HTTPException(
-            500,
-            f"Missing {CLIENT_SECRETS_FILE}. Download it from Google Cloud Console → "
-            "APIs & Services → Credentials → OAuth 2.0 Client IDs.",
-        )
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI
-    )
-    auth_url, state = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true", prompt="consent"
-    )
-    session["oauth_state"] = state
-    session["code_verifier"] = flow.code_verifier
-    return {"auth_url": auth_url}
-
-
-@app.get("/oauth/callback")
-async def oauth_callback(request: Request):
-    code = request.query_params.get("code")
-    state = request.query_params.get("state")
-    if not code:
-        raise HTTPException(400, "Missing authorization code")
-
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-        state=state,
-        code_verifier=session.get("code_verifier"),
-    )
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-
-    session["credentials"] = {
-        "token": creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes": list(creds.scopes or []),
-    }
-    return RedirectResponse("/?auth=success")
-
-
-@app.post("/auth/logout")
-async def logout():
-    session.clear()
-    return {"ok": True}
-
-
-# ---------------------------------------------------------------------------
-# Routes — Drive
-# ---------------------------------------------------------------------------
-@app.get("/drive/search")
-async def search_files(q: str = ""):
-    creds = _get_creds()
-    service = build("drive", "v3", credentials=creds, cache_discovery=False)
-
-    query_parts = [
-        "(mimeType contains 'video/' or mimeType = 'application/octet-stream')"
-    ]
-    if q.strip():
-        safe_q = q.replace("'", "\\'")
-        query_parts.append(f"name contains '{safe_q}'")
-    query_parts.append("trashed = false")
-
-    results = (
-        service.files()
-        .list(
-            q=" and ".join(query_parts),
-            spaces="drive",
-            fields="files(id,name,size,mimeType,videoMediaMetadata,modifiedTime)",
-            pageSize=30,
-            orderBy="modifiedTime desc",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True,
-        )
-        .execute()
-    )
-    files = results.get("files", [])
-
-    # Attach human-readable sizes
-    for f in files:
-        if "size" in f:
-            f["sizeFormatted"] = _format_bytes(int(f["size"]))
-    return {"files": files}
-
-
-@app.get("/drive/file/{file_id}")
-async def file_detail(file_id: str):
-    creds = _get_creds()
-    service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    f = (
-        service.files()
-        .get(
-            fileId=file_id,
-            fields="id,name,size,mimeType,videoMediaMetadata,modifiedTime",
-            supportsAllDrives=True,
-        )
-        .execute()
-    )
-    if "size" in f:
-        f["sizeFormatted"] = _format_bytes(int(f["size"]))
-    return f
+    html = Path(__file__).parent / "static" / "index.html"
+    if html.exists():
+        return html.read_text()
+    return "<h1>Drive Cutter</h1><p>Server running. Use the browser extension.</p>"
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +178,48 @@ async def drive_public_info(file_id: str):
             mime = resp.headers.get("Content-Type", "video/mp4").split(";")[0]
     except (urllib.error.HTTPError, urllib.error.URLError):
         raise HTTPException(403, "File is not publicly accessible")
+    return {
+        "id": file_id,
+        "name": name,
+        "size": size,
+        "sizeFormatted": _format_bytes(size),
+        "mimeType": mime,
+        "source": "drive_public",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Drive (cookie-authenticated, via extension)
+# ---------------------------------------------------------------------------
+DRIVE_COOKIE_URL = DRIVE_PUBLIC_URL
+
+
+@app.post("/drive/cookie-info/{file_id}")
+async def drive_cookie_info(file_id: str, request: Request):
+    body = await request.json()
+    cookies = body.get("cookies", "")
+    url = DRIVE_COOKIE_URL.format(file_id)
+    req = urllib.request.Request(url)
+    req.add_header("Range", "bytes=0-0")
+    req.add_header("Cookie", cookies)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            cd = resp.headers.get("Content-Disposition", "")
+            name = "video.mp4"
+            if 'filename="' in cd:
+                name = cd.split('filename="')[1].split('"')[0]
+            elif "filename*=" in cd:
+                name = cd.split("filename*=")[1].split("''")[-1].strip()
+                name = urllib.parse.unquote(name)
+            cr = resp.headers.get("Content-Range", "")
+            size = int(cr.split("/")[-1]) if "/" in cr else 0
+            if size == 0:
+                size = int(resp.headers.get("Content-Length", 0))
+            mime = resp.headers.get("Content-Type", "video/mp4").split(";")[0]
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        raise HTTPException(403, f"Cookie auth failed: {e}")
+    if size == 0:
+        raise HTTPException(403, "Could not determine file size — cookies may be invalid")
     return {
         "id": file_id,
         "name": name,
@@ -311,12 +287,95 @@ async def wetransfer_download_url(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Routes — Drive proxy (FFmpeg can't follow Google's redirects)
+# ---------------------------------------------------------------------------
+_proxy_registry: dict[str, dict] = {}
+
+
+@app.post("/proxy/register")
+async def proxy_register(request: Request):
+    body = await request.json()
+    token = uuid.uuid4().hex
+    _proxy_registry[token] = {
+        "url": body["url"],
+        "cookies": body.get("cookies", ""),
+        "created": time.time(),
+    }
+    return {"token": token, "proxy_url": f"http://127.0.0.1:{PORT}/proxy/stream/{token}"}
+
+
+@app.get("/proxy/stream/{token}")
+async def proxy_stream(token: str, request: Request):
+    entry = _proxy_registry.get(token)
+    if not entry:
+        raise HTTPException(404, "Unknown proxy token")
+
+    url = entry["url"]
+    cookies = entry["cookies"]
+    total_size = entry.get("size", 0)
+
+    req = urllib.request.Request(url)
+    if cookies:
+        req.add_header("Cookie", cookies)
+
+    range_header = request.headers.get("range")
+    if range_header:
+        # Google Drive rejects open-ended Range (bytes=0-) with an HTML page.
+        # Rewrite to a concrete end byte so Drive returns actual video bytes.
+        m = re.match(r"bytes=(\d+)-$", range_header)
+        if m:
+            start = int(m.group(1))
+            end = start + 10 * 1024 * 1024 - 1  # 10 MB chunk
+            if total_size > 0:
+                end = min(end, total_size - 1)
+            range_header = f"bytes={start}-{end}"
+        req.add_header("Range", range_header)
+    else:
+        # No Range at all — also gets HTML from Drive. Send a concrete range.
+        end = 10 * 1024 * 1024 - 1
+        if total_size > 0:
+            end = min(end, total_size - 1)
+        req.add_header("Range", f"bytes=0-{end}")
+
+    req.add_header("User-Agent", "Mozilla/5.0")
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, f"Upstream error: {e.reason}")
+
+    content_type = resp.headers.get("Content-Type", "video/mp4")
+    content_length = resp.headers.get("Content-Length")
+    content_range = resp.headers.get("Content-Range")
+    status = 206 if content_range else 200
+
+    headers = {}
+    if content_length:
+        headers["Content-Length"] = content_length
+    if content_range:
+        headers["Content-Range"] = content_range
+    headers["Accept-Ranges"] = "bytes"
+
+    def stream():
+        try:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            resp.close()
+
+    return StreamingResponse(stream(), status_code=status, media_type=content_type, headers=headers)
+
+
+# ---------------------------------------------------------------------------
 # Routes — Cut
 # ---------------------------------------------------------------------------
 @app.post("/cut")
 async def cut_video(request: Request):
     body = await request.json()
-    source = body.get("source", "drive")
+    source = body.get("source", "drive_public")
 
     file_id = body.get("file_id")
     start_time = body.get("start_time", "0")
@@ -330,28 +389,43 @@ async def cut_video(request: Request):
     if duration <= 0:
         raise HTTPException(400, "End time must be after start time")
 
-    if source == "drive":
-        creds = _get_creds()
-        video_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-        extra_headers = f"Authorization: Bearer {creds.token}\r\n"
-    elif source == "drive_public":
-        video_url = DRIVE_PUBLIC_URL.format(file_id)
-        extra_headers = None
+    proxy_token = None
+    file_size = body.get("file_size", 0)
+    if source == "drive_public":
+        upstream_url = DRIVE_PUBLIC_URL.format(file_id)
+        token = uuid.uuid4().hex
+        _proxy_registry[token] = {
+            "url": upstream_url,
+            "cookies": "",
+            "size": file_size,
+            "created": time.time(),
+        }
+        video_url = f"http://127.0.0.1:{PORT}/proxy/stream/{token}"
+        proxy_token = token
+    elif source == "drive_cookie":
+        upstream_url = DRIVE_COOKIE_URL.format(file_id)
+        cookies = body.get("cookies", "")
+        token = uuid.uuid4().hex
+        _proxy_registry[token] = {
+            "url": upstream_url,
+            "cookies": cookies,
+            "size": file_size,
+            "created": time.time(),
+        }
+        video_url = f"http://127.0.0.1:{PORT}/proxy/stream/{token}"
+        proxy_token = token
     elif source == "wetransfer":
         video_url = body.get("direct_url")
         if not video_url:
             raise HTTPException(400, "direct_url required for wetransfer source")
-        extra_headers = None
     else:
         raise HTTPException(400, f"Unknown source: {source}")
 
-    slug = body.get("filename", "cut").replace(" ", "_")
+    slug = body.get("filename", "cut").replace(" ", "_").replace("/", "_").replace("\\", "_")
     out_name = f"{slug}_{uuid.uuid4().hex[:6]}.mp4"
     out_path = OUTPUT_DIR / out_name
 
     cmd = ["ffmpeg", "-hide_banner"]
-    if extra_headers:
-        cmd += ["-headers", extra_headers]
     cmd += [
         "-reconnect", "1",
         "-reconnect_streamed", "1",
@@ -368,16 +442,28 @@ async def cut_video(request: Request):
 
     t0 = time.time()
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "FFmpeg timed out (10 min limit)")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(504, "FFmpeg timed out (10 min limit)")
+        returncode = proc.returncode
+        stderr_text = stderr.decode(errors="replace")
     except FileNotFoundError:
         raise HTTPException(500, "FFmpeg not found. Install it: https://ffmpeg.org")
+    finally:
+        if proxy_token:
+            _proxy_registry.pop(proxy_token, None)
 
     elapsed = round(time.time() - t0, 1)
 
-    if result.returncode != 0:
-        err_tail = "\n".join(result.stderr.strip().splitlines()[-8:])
+    if returncode != 0:
+        err_tail = "\n".join(stderr_text.strip().splitlines()[-8:])
         return JSONResponse({"error": "FFmpeg failed", "details": err_tail}, status_code=500)
 
     if not out_path.exists() or out_path.stat().st_size == 0:
@@ -406,6 +492,9 @@ async def download(filename: str):
 # Entry
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # allow http for local dev
-    print(f"\n  Drive Cutter → http://localhost:{PORT}\n")
+    print(f"\n  Drive Cutter → http://localhost:{PORT}")
+    if IDLE_TIMEOUT > 0:
+        print(f"  Auto-shutdown after {IDLE_TIMEOUT}s idle\n")
+    else:
+        print()
     uvicorn.run(app, host=HOST, port=PORT)

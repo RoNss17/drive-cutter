@@ -1,6 +1,10 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
-client_secret.json
 .env
 .DS_Store
+client_secret.json
+token.json
+*.credentials
+native-host/com.drivecutter.host.json

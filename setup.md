@@ -1,130 +1,99 @@
 # Drive Cutter
 
-Cut segments from Google Drive videos without downloading the full file.
+Cut segments from Google Drive and WeTransfer videos without downloading the full file.
 
-Uses FFmpeg's HTTP Range request support to fetch only the bytes for your selected time range — so pulling 2 minutes from a 4-hour timeline downloads ~2% of the file, not 100%.
+Uses FFmpeg HTTP Range requests — pulling 2 minutes from a 4-hour video downloads ~2% of the file, not 100%.
 
----
-
-## Prerequisites
-
-- **Python 3.9+**
-- **FFmpeg** installed and on your PATH
-  - macOS: `brew install ffmpeg`
-  - Ubuntu/Debian: `sudo apt install ffmpeg`
-  - Windows: download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH
-- A **Google Cloud project** with the Drive API enabled
+**No login or API keys required.** Works with any publicly shared Drive link or WeTransfer transfer. For private Drive files, the Chrome extension uses your existing browser session.
 
 ---
 
-## Setup (one-time, ~5 minutes)
+## Quick Setup (macOS / Linux, ~2 minutes)
 
-### 1. Google Cloud credentials
+### Prerequisites
 
-You need an OAuth 2.0 Client ID so the app can read your Drive files.
+- **Python 3.9+** — `brew install python3` or `sudo apt install python3 python3-venv`
+- **FFmpeg** — `brew install ffmpeg` or `sudo apt install ffmpeg`
+- **Google Chrome**
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or pick an existing one)
-3. **Enable the Google Drive API:**
-   - Go to APIs & Services → Library
-   - Search "Google Drive API" → Enable
-4. **Configure the OAuth consent screen:**
-   - APIs & Services → OAuth consent screen
-   - User type: External (or Internal if using Workspace)
-   - Fill in the app name (anything — "Drive Cutter" works)
-   - Add your email as a test user
-   - Scopes: add `drive.readonly`
-5. **Create credentials:**
-   - APIs & Services → Credentials → Create Credentials → OAuth Client ID
-   - Application type: **Web application**
-   - Authorized redirect URI: `http://localhost:8000/oauth/callback`
-   - Download the JSON file
-6. **Rename** the downloaded file to `client_secret.json` and put it in the `drive-cutter/` folder (same directory as `app.py`)
-
-### 2. Install dependencies
+### Install
 
 ```bash
 cd drive-cutter
-pip install -r requirements.txt
+chmod +x install.sh
+./install.sh
 ```
 
-### 3. Run
+The script will:
+1. Check prerequisites
+2. Create a Python virtual environment and install dependencies
+3. Walk you through loading the Chrome extension
+4. Register the native messaging host with your extension ID
 
-```bash
-python app.py
-```
-
-Open [http://localhost:8000](http://localhost:8000) in your browser.
-
-Click **Connect Drive**, sign in with Google, and you're in.
+After it finishes, restart Chrome.
 
 ---
 
 ## Usage
 
-1. **Search** for a video file by name (or hit Enter with an empty search to list recent videos)
-2. **Select** a file from the list
-3. **Set the time range** — start and end times in `HH:MM:SS` format
-4. **Cut & download** — the server runs FFmpeg, which Range-requests only the needed bytes from Drive, stream-copies them into a new MP4, and hands you the file
+1. Open a **Google Drive** video page (`drive.google.com/file/d/.../view`) or a **WeTransfer** preview page
+2. The **Drive Cutter** panel appears in the bottom-right corner
+3. Use the ⏱ buttons to capture the current playhead position, or type times manually
+4. Click **Cut** — the server starts automatically if needed
+5. Click **Download** when ready
+
+You can add multiple segments and cut them all at once.
 
 ---
 
-## How it works under the hood
+## Sharing with others
 
-The core FFmpeg command looks like this:
-
-```
-ffmpeg \
-  -headers "Authorization: Bearer TOKEN\r\n" \
-  -ss 00:45:00 \
-  -i "https://www.googleapis.com/drive/v3/files/FILE_ID?alt=media" \
-  -t 120 \
-  -c copy \
-  -movflags +faststart \
-  output.mp4
-```
-
-Key details:
-
-- **`-ss` before `-i`** tells FFmpeg to do input-level seeking. It estimates the byte offset for your timestamp and sends an HTTP Range request for that position — it does not download from the beginning.
-- **`-c copy`** stream-copies the video and audio without re-encoding. Fast and lossless, but cuts are aligned to the nearest keyframe (typically within 0.5–2 seconds of your requested time).
-- **`-movflags +faststart`** moves the moov atom to the front of the output file so the clip plays instantly without buffering.
-- The `-headers` flag passes your OAuth token so Google Drive accepts the partial download request.
-
-### What about the moov atom?
-
-If the source file on Drive has its moov atom at the end (common with files not optimized for streaming), FFmpeg will first fetch the tail of the file to read the index, then jump to your segment. This is two Range requests instead of one — still far less data than a full download.
-
-For fastest cuts, make sure footage is uploaded with `faststart` (moov atom at the beginning). You can fix existing files before upload:
-
-```
-ffmpeg -i input.mp4 -c copy -movflags +faststart input_fixed.mp4
-```
-
-### Keyframe alignment
-
-With `-c copy`, cuts snap to the nearest keyframe boundary. For most H.264/H.265 footage, keyframes are every 0.5–2 seconds, so your clip might be slightly longer than the exact range you entered.
-
-If you need frame-accurate cuts, you'd swap `-c copy` for re-encoding (e.g., `-c:v libx264 -c:a aac`), which is slower but precise. The app currently uses stream copy for speed.
+1. Share the `drive-cutter/` folder (zip, git clone, airdrop, etc.)
+2. They run `./install.sh`
+3. Done
 
 ---
 
-## Configuration
+## How it works
 
-Environment variables (all optional):
+- **`-ss` before `-i`** — FFmpeg seeks via HTTP Range requests, not by downloading from the start
+- **`-c copy`** — stream copy, no re-encoding (fast, lossless, snaps to nearest keyframe)
+- **Local proxy** — the server proxies Google Drive downloads to handle redirect/range quirks that FFmpeg can't
+- **Auto-start** — the Chrome extension uses Native Messaging to start the server on demand
+- **Auto-shutdown** — server stops after 10 minutes of inactivity
+
+### WeTransfer
+
+The server calls WeTransfer's API to get a signed CloudFront URL (10-min expiry), which also supports Range requests.
+
+---
+
+## Project structure
+
+```
+drive-cutter/
+├── app.py                  FastAPI server
+├── requirements.txt        fastapi + uvicorn
+├── install.sh              One-time setup (run this)
+├── register-extension.sh   Re-register extension ID if needed
+├── static/index.html       Standalone web UI (optional)
+├── extension/
+│   ├── manifest.json       Chrome MV3 manifest
+│   ├── background.js       Service worker
+│   ├── content.js          Injected panel on Drive/WeTransfer
+│   ├── content.css         Panel styles
+│   ├── popup.html/js       Extension popup
+│   └── icon*.png           Icons
+└── native-host/
+    └── host.py             Starts server on demand via Native Messaging
+```
+
+## Configuration (optional)
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_CLIENT_SECRETS` | `client_secret.json` | Path to your OAuth credentials file |
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `8000` | Server port |
-| `REDIRECT_URI` | `http://localhost:8000/oauth/callback` | Must match your Google Cloud credential config |
+| `IDLE_TIMEOUT` | `600` | Auto-shutdown delay in seconds (0 = off) |
 
----
-
-## Limitations
-
-- **Single-user local tool.** Session state is stored in memory, not in a database. This is designed to run on your machine, not as a multi-user web service.
-- **Token expiration.** Google OAuth tokens expire after about an hour. If a cut fails with a 401, click Disconnect and reconnect.
-- **File size limits.** Google Drive API has bandwidth quotas. For very large files or frequent use, watch your Drive API quota in the Cloud Console.
-- **Codec support.** Stream copy works with any codec FFmpeg supports. If the source uses an unusual container format, the output might need a different extension.
+Set via environment variables: `PORT=9000 ./venv/bin/python app.py`
