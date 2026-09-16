@@ -8,3 +8,4 @@ client_secret.json
 token.json
 *.credentials
 native-host/com.drivecutter.host.json
+dist/

@@ -16,7 +16,10 @@ import urllib.error
 SERVER_URL = "http://127.0.0.1:8000"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python")
+if sys.platform == "win32":
+    VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "Scripts", "python.exe")
+else:
+    VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python")
 APP_PY = os.path.join(PROJECT_DIR, "app.py")
 
 
@@ -51,13 +54,12 @@ def start_server():
         return
 
     python = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
-    subprocess.Popen(
-        [python, APP_PY],
-        cwd=PROJECT_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    kwargs = dict(cwd=PROJECT_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([python, APP_PY], **kwargs)
 
     for _ in range(30):
         time.sleep(0.5)
