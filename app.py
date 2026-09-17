@@ -4,8 +4,11 @@ Uses FFmpeg HTTP Range requests — only downloads the bytes you need.
 """
 
 import asyncio
+import logging
+import logging.handlers
 import os
 import re
+import shutil
 import uuid
 import tempfile
 import time
@@ -17,11 +20,34 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
+from collections import deque
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+
+# ---------------------------------------------------------------------------
+# Logging — daily rotation, 7-day retention
+# ---------------------------------------------------------------------------
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+log = logging.getLogger("drivecutter")
+log.setLevel(logging.DEBUG)
+
+_file_handler = logging.handlers.TimedRotatingFileHandler(
+    LOG_DIR / "server.log", when="midnight", backupCount=7, encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
+))
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+_console_handler.setLevel(logging.INFO)
+log.addHandler(_file_handler)
+log.addHandler(_console_handler)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -33,11 +59,48 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "600"))  # seconds, 0 = disabled
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "drive-cutter-output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Clean up old output files on startup
+_cleaned = 0
+for _old in OUTPUT_DIR.glob("*.mp4"):
+    try:
+        _old.unlink()
+        _cleaned += 1
+    except OSError:
+        pass
+if _cleaned:
+    log.info("Startup cleanup: removed %d old output file(s)", _cleaned)
+
+# Ensure Homebrew paths are available (Chrome launches with a minimal PATH)
+for p in ["/opt/homebrew/bin", "/usr/local/bin"]:
+    if p not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = p + ":" + os.environ.get("PATH", "")
+
+_BUNDLED_FFMPEG = Path(__file__).parent / "bin" / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+FFMPEG = str(_BUNDLED_FFMPEG) if _BUNDLED_FFMPEG.exists() else (shutil.which("ffmpeg") or "ffmpeg")
+log.info("FFmpeg: %s", FFMPEG)
+log.info("Output dir: %s", OUTPUT_DIR)
+
+# Drive's download endpoint answers with an HTML "quota exceeded" page instead of
+# bytes when a single Range is too large (500 MB fails cold) and sometimes when
+# requests arrive too fast (seen at 10 MB). Keep upstream requests small and let
+# the proxy stitch them into one continuous stream for FFmpeg.
+DRIVE_CHUNK = int(os.getenv("DRIVE_CHUNK_MB", "10")) * 1024 * 1024
+DRIVE_PREFETCH = max(0, int(os.getenv("DRIVE_PREFETCH", "1")))  # extra chunks in flight
+DRIVE_HTML_RETRIES = 4
+
 DRIVE_PUBLIC_URL = (
     "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t"
 )
 
-app = FastAPI(title="Drive Cutter")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    if IDLE_TIMEOUT > 0:
+        _check_idle()
+    yield
+
+
+app = FastAPI(title="Drive Cutter", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,11 +112,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-static_dir = Path(__file__).parent / "static"
-if static_dir.is_dir():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
 
 # ---------------------------------------------------------------------------
 # Idle shutdown
@@ -72,7 +130,7 @@ def _check_idle():
         return
     idle = time.time() - _last_activity
     if idle >= IDLE_TIMEOUT:
-        print(f"\n  Idle for {IDLE_TIMEOUT}s — shutting down.\n")
+        log.info("Idle for %ds — shutting down", IDLE_TIMEOUT)
         os.kill(os.getpid(), signal.SIGTERM)
     else:
         remaining = IDLE_TIMEOUT - idle
@@ -82,16 +140,19 @@ def _check_idle():
         _idle_timer.start()
 
 
-@app.middleware("http")
-async def activity_tracker(request: Request, call_next):
-    _touch()
-    return await call_next(request)
+class _ActivityMiddleware:
+    # Plain ASGI on purpose: @app.middleware("http") is BaseHTTPMiddleware, which
+    # cancels the app on client disconnect and leaves streaming generators un-closed.
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            _touch()
+        await self.app(scope, receive, send)
 
 
-@app.on_event("startup")
-async def _start_idle_watcher():
-    if IDLE_TIMEOUT > 0:
-        _check_idle()
+app.add_middleware(_ActivityMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -146,15 +207,27 @@ def _parse_wetransfer_url(url):
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0"}
+    return {"status": "ok", "version": "2.1"}
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def index():
-    html = Path(__file__).parent / "static" / "index.html"
-    if html.exists():
-        return html.read_text()
-    return "<h1>Drive Cutter</h1><p>Server running. Use the browser extension.</p>"
+    return {"app": "Drive Cutter", "status": "running",
+            "hint": "Open a Google Drive or WeTransfer video page with the Chrome extension installed."}
+
+
+@app.get("/debug/tasks")
+async def debug_tasks():
+    """Where is every coroutine parked right now? For diagnosing stuck streams."""
+    out = []
+    for task in asyncio.all_tasks():
+        frames = task.get_stack(limit=6)
+        out.append({
+            "name": task.get_name(),
+            "done": task.done(),
+            "stack": [f"{f.f_code.co_name} ({Path(f.f_code.co_filename).name}:{f.f_lineno})" for f in frames],
+        })
+    return {"count": len(out), "tasks": out}
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +235,7 @@ async def index():
 # ---------------------------------------------------------------------------
 @app.get("/drive/public-info/{file_id}")
 async def drive_public_info(file_id: str):
+    log.info("Public info request: file_id=%s", file_id)
     url = DRIVE_PUBLIC_URL.format(file_id)
     req = urllib.request.Request(url)
     req.add_header("Range", "bytes=0-0")
@@ -176,8 +250,10 @@ async def drive_public_info(file_id: str):
             if size == 0:
                 size = int(resp.headers.get("Content-Length", 0))
             mime = resp.headers.get("Content-Type", "video/mp4").split(";")[0]
-    except (urllib.error.HTTPError, urllib.error.URLError):
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        log.warning("Public info failed for %s: %s", file_id, e)
         raise HTTPException(403, "File is not publicly accessible")
+    log.info("Public info OK: name=%s size=%s mime=%s", name, _format_bytes(size), mime)
     return {
         "id": file_id,
         "name": name,
@@ -198,12 +274,14 @@ DRIVE_COOKIE_URL = DRIVE_PUBLIC_URL
 async def drive_cookie_info(file_id: str, request: Request):
     body = await request.json()
     cookies = body.get("cookies", "")
+    log.info("Cookie info request: file_id=%s cookies_len=%d", file_id, len(cookies))
     url = DRIVE_COOKIE_URL.format(file_id)
     req = urllib.request.Request(url)
     req.add_header("Range", "bytes=0-0")
     req.add_header("Cookie", cookies)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
+            log.debug("Cookie info response: url=%s ct=%s cr=%s", resp.url, resp.headers.get("Content-Type"), resp.headers.get("Content-Range"))
             cd = resp.headers.get("Content-Disposition", "")
             name = "video.mp4"
             if 'filename="' in cd:
@@ -217,9 +295,12 @@ async def drive_cookie_info(file_id: str, request: Request):
                 size = int(resp.headers.get("Content-Length", 0))
             mime = resp.headers.get("Content-Type", "video/mp4").split(";")[0]
     except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        log.error("Cookie auth failed for %s: %s", file_id, e)
         raise HTTPException(403, f"Cookie auth failed: {e}")
     if size == 0:
+        log.warning("Cookie info returned size=0 for %s — cookies may be stale", file_id)
         raise HTTPException(403, "Could not determine file size — cookies may be invalid")
+    log.info("Cookie info OK: name=%s size=%s mime=%s", name, _format_bytes(size), mime)
     return {
         "id": file_id,
         "name": name,
@@ -239,7 +320,9 @@ async def wetransfer_resolve(request: Request):
     wt_url = body.get("url", "")
     transfer_id, security_hash, subdomain = _parse_wetransfer_url(wt_url)
     if not transfer_id:
+        log.warning("Could not parse WeTransfer URL: %s", wt_url[:100])
         raise HTTPException(400, "Could not parse WeTransfer URL")
+    log.info("WeTransfer resolve: transfer_id=%s subdomain=%s", transfer_id, subdomain)
     api_base = (
         f"https://{subdomain}.wetransfer.com" if subdomain else "https://wetransfer.com"
     )
@@ -249,6 +332,7 @@ async def wetransfer_resolve(request: Request):
             data={"security_hash": security_hash},
         )
     except Exception as e:
+        log.error("WeTransfer resolve failed: %s", e)
         raise HTTPException(502, f"WeTransfer API error: {e}")
     files = []
     for item in data.get("items", []):
@@ -259,6 +343,7 @@ async def wetransfer_resolve(request: Request):
                 "size": item["size"],
                 "sizeFormatted": _format_bytes(item["size"]),
             })
+    log.info("WeTransfer resolved: %d file(s), display_name=%s", len(files), data.get("display_name"))
     return {
         "transfer_id": transfer_id,
         "security_hash": security_hash,
@@ -272,6 +357,7 @@ async def wetransfer_resolve(request: Request):
 async def wetransfer_download_url(request: Request):
     body = await request.json()
     api_base = body.get("api_base", "https://wetransfer.com")
+    log.info("WeTransfer download-url: transfer_id=%s file_id=%s", body.get("transfer_id"), body.get("file_id"))
     try:
         data = _fetch_json(
             f"{api_base}/api/v4/transfers/{body['transfer_id']}/download",
@@ -282,7 +368,9 @@ async def wetransfer_download_url(request: Request):
             },
         )
     except Exception as e:
+        log.error("WeTransfer download-url failed: %s", e)
         raise HTTPException(502, f"WeTransfer API error: {e}")
+    log.info("WeTransfer download-url OK")
     return {"direct_link": data["direct_link"]}
 
 
@@ -290,6 +378,7 @@ async def wetransfer_download_url(request: Request):
 # Routes — Drive proxy (FFmpeg can't follow Google's redirects)
 # ---------------------------------------------------------------------------
 _proxy_registry: dict[str, dict] = {}
+_cut_progress: dict[str, dict] = {}  # cut_id -> {path, estimated_size, done}
 
 
 @app.post("/proxy/register")
@@ -301,72 +390,202 @@ async def proxy_register(request: Request):
         "cookies": body.get("cookies", ""),
         "created": time.time(),
     }
+    log.info("Proxy registered: token=%s..%s url=%s", token[:8], token[-4:], body["url"][:80])
     return {"token": token, "proxy_url": f"http://127.0.0.1:{PORT}/proxy/stream/{token}"}
+
+
+class _DriveHTMLError(Exception):
+    def __init__(self, kind: str, body: str):
+        super().__init__(kind)
+        self.kind = kind
+        self.body = body
+
+
+def _fetch_range(url: str, cookies: str, start: int, end: int):
+    """Fetch bytes [start, end] from upstream in one request.
+
+    Returns (data, total_size_or_0, content_type). Drive's HTML rejection pages are
+    retried with exponential backoff; anything else propagates.
+    """
+    delay = 1.0
+    for attempt in range(1, DRIVE_HTML_RETRIES + 1):
+        req = urllib.request.Request(url)
+        if cookies:
+            req.add_header("Cookie", cookies)
+        req.add_header("Range", f"bytes={start}-{end}")
+        req.add_header("User-Agent", "Mozilla/5.0")
+        resp = urllib.request.urlopen(req, None, 30)
+        ct = resp.headers.get("Content-Type", "")
+        if "text/html" not in ct:
+            # Never read more than asked, even if the server ignored Range and sent 200
+            data = resp.read(end - start + 1)
+            cr = resp.headers.get("Content-Range", "")
+            resp.close()
+            tail = cr.split("/")[-1] if "/" in cr else ""
+            total = int(tail) if tail.isdigit() else 0
+            return data, total, ct
+        body = resp.read(8192).decode(errors="replace")
+        resp.close()
+        kind = "rate-limit" if ("Quota exceeded" in body or "Too many users" in body) else "html"
+        if attempt == DRIVE_HTML_RETRIES:
+            log.error("Drive %s page persisted after %d attempts for bytes=%d-%d:\n%s",
+                      kind, attempt, start, end, body[:600])
+            raise _DriveHTMLError(kind, body)
+        log.warning("Drive returned %s page for bytes=%d-%d (attempt %d/%d) — retrying in %.0fs",
+                    kind, start, end, attempt, DRIVE_HTML_RETRIES, delay)
+        time.sleep(delay)
+        delay *= 2
+
+
+def _html_error_message(err: _DriveHTMLError) -> str:
+    if err.kind == "rate-limit":
+        return ("Google Drive is rate-limiting this file (it reports 'quota exceeded'). "
+                "Wait a minute and try again. If it keeps happening, make a copy of the file "
+                "in your Drive (right-click → Make a copy) and cut from the copy.")
+    return f"Google Drive returned a web page instead of video data: {err.body[:200]!r}"
 
 
 @app.get("/proxy/stream/{token}")
 async def proxy_stream(token: str, request: Request):
     entry = _proxy_registry.get(token)
     if not entry:
+        log.warning("Proxy stream: unknown token %s", token[:12])
         raise HTTPException(404, "Unknown proxy token")
 
     url = entry["url"]
     cookies = entry["cookies"]
-    total_size = entry.get("size", 0)
+    total = entry.get("size", 0) or 0
 
-    req = urllib.request.Request(url)
-    if cookies:
-        req.add_header("Cookie", cookies)
-
-    range_header = request.headers.get("range")
-    if range_header:
-        # Google Drive rejects open-ended Range (bytes=0-) with an HTML page.
-        # Rewrite to a concrete end byte so Drive returns actual video bytes.
-        m = re.match(r"bytes=(\d+)-$", range_header)
-        if m:
-            start = int(m.group(1))
-            end = start + 10 * 1024 * 1024 - 1  # 10 MB chunk
-            if total_size > 0:
-                end = min(end, total_size - 1)
-            range_header = f"bytes={start}-{end}"
-        req.add_header("Range", range_header)
+    range_header = request.headers.get("range", "")
+    m_full = re.match(r"bytes=(\d+)-(\d+)$", range_header)
+    m_open = re.match(r"bytes=(\d+)-$", range_header)
+    if m_full:
+        start, stop = int(m_full.group(1)), int(m_full.group(2))
+    elif m_open:
+        start, stop = int(m_open.group(1)), None
     else:
-        # No Range at all — also gets HTML from Drive. Send a concrete range.
-        end = 10 * 1024 * 1024 - 1
-        if total_size > 0:
-            end = min(end, total_size - 1)
-        req.add_header("Range", f"bytes=0-{end}")
+        start, stop = 0, None
 
-    req.add_header("User-Agent", "Mozilla/5.0")
+    if total and start >= total:
+        raise HTTPException(416, "Range not satisfiable")
 
+    first_end = start + DRIVE_CHUNK - 1
+    if stop is not None:
+        first_end = min(first_end, stop)
+    if total:
+        first_end = min(first_end, total - 1)
+
+    t0 = time.time()
+    log.debug("Proxy stream request: bytes=%d-%s (first chunk %d-%d)", start, stop if stop is not None else "", start, first_end)
     try:
-        resp = urllib.request.urlopen(req, timeout=60)
+        first, learned_total, content_type = await asyncio.to_thread(
+            _fetch_range, url, cookies, start, first_end
+        )
     except urllib.error.HTTPError as e:
-        raise HTTPException(e.code, f"Upstream error: {e.reason}")
+        log.error("Proxy upstream HTTP error: %d %s url=%s", e.code, e.reason, url[:80])
+        raise HTTPException(e.code if e.code in (403, 404, 416) else 502, f"Upstream error: {e.reason}")
+    except urllib.error.URLError as e:
+        log.error("Proxy upstream URL error: %s url=%s", e.reason, url[:80])
+        raise HTTPException(502, f"Upstream error: {e.reason}")
+    except _DriveHTMLError as e:
+        raise HTTPException(502, _html_error_message(e))
 
-    content_type = resp.headers.get("Content-Type", "video/mp4")
-    content_length = resp.headers.get("Content-Length")
-    content_range = resp.headers.get("Content-Range")
-    status = 206 if content_range else 200
+    if not total and learned_total:
+        total = learned_total
+        entry["size"] = total
+    if stop is None:
+        stop = (total - 1) if total else (start + len(first) - 1)
+    elif total:
+        stop = min(stop, total - 1)
+    length = stop - start + 1
 
-    headers = {}
-    if content_length:
-        headers["Content-Length"] = content_length
-    if content_range:
-        headers["Content-Range"] = content_range
-    headers["Accept-Ranges"] = "bytes"
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(length)}
+    if total:
+        headers["Content-Range"] = f"bytes {start}-{stop}/{total}"
+    status = 206 if total else 200
+    log.info("Proxy stream open: bytes=%d-%d/%s (%s) chunk=%s prefetch=%d",
+             start, stop, total or "?", _format_bytes(length), _format_bytes(DRIVE_CHUNK), DRIVE_PREFETCH)
 
-    def stream():
+    async def gen():
+        sent = 0
+        chunks = 1
+        pending: deque = deque()
+        next_start = first_end + 1
+        gone = asyncio.Event()
+        closed = False
+
+        def close(note: str):
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            gone.set()
+            for f in pending:
+                f.cancel()
+            elapsed = time.time() - t0
+            rate = (sent / 1048576 / elapsed) if elapsed > 0 else 0.0
+            log.info("Proxy stream closed: %s in %d chunk(s), %.1fs, %.1f MB/s%s",
+                     _format_bytes(sent), chunks, elapsed, rate, note)
+
+        # uvicorn silently drops sends after a disconnect and Starlette no longer
+        # cancels the stream, so nothing tells us the client left. Poll for it from
+        # a side task: it notices even while we're parked on an upstream fetch, and
+        # it runs the cleanup itself in case the consumer abandons this generator
+        # without closing it (then our own `finally` only runs at GC time).
+        # (is_disconnected() also resumes the socket's read side, which is what
+        # lets the peer's close be observed at all.)
+        async def watchdog():
+            while not gone.is_set():
+                if await request.is_disconnected():
+                    log.debug("Proxy stream: client gone after %.1fs (watchdog)", time.time() - t0)
+                    close(" (client stopped early)")
+                    return
+                await asyncio.sleep(0.5)
+
+        watch = asyncio.ensure_future(watchdog())
+        gone_wait = asyncio.ensure_future(gone.wait())
+
+        def schedule():
+            nonlocal next_start
+            while len(pending) <= DRIVE_PREFETCH and next_start <= stop:
+                s, e = next_start, min(next_start + DRIVE_CHUNK - 1, stop)
+                pending.append(asyncio.ensure_future(asyncio.to_thread(_fetch_range, url, cookies, s, e)))
+                next_start = e + 1
+
+        buf = first
         try:
             while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
+                for i in range(0, len(buf), 256 * 1024):
+                    if gone.is_set() or await request.is_disconnected():
+                        return
+                    piece = buf[i:i + 256 * 1024]
+                    sent += len(piece)
+                    yield piece
+                if next_start > stop and not pending:
                     break
-                yield chunk
+                # Read-ahead starts only after the client has taken a whole chunk:
+                # FFmpeg's seek probes read a few KB and disconnect, and prefetching
+                # for those would just burn requests against Drive's rate limit.
+                schedule()
+                fut = pending.popleft()
+                schedule()
+                done, _ = await asyncio.wait({fut, gone_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if fut not in done:
+                    log.debug("Proxy stream: abandoning upstream wait, client gone")
+                    return
+                try:
+                    buf, _, _ = fut.result()
+                    chunks += 1
+                except Exception as e:
+                    # Drop the connection; FFmpeg's -reconnect resumes from its own offset.
+                    log.error("Upstream chunk failed mid-stream at %s: %s", _format_bytes(start + sent), e)
+                    return
         finally:
-            resp.close()
+            close("" if sent >= length else " (client stopped early)")
+            watch.cancel()
+            gone_wait.cancel()
 
-    return StreamingResponse(stream(), status_code=status, media_type=content_type, headers=headers)
+    return StreamingResponse(gen(), status_code=status, media_type=content_type or "video/mp4", headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +607,9 @@ async def cut_video(request: Request):
     duration = end_sec - start_sec
     if duration <= 0:
         raise HTTPException(400, "End time must be after start time")
+
+    log.info("Cut request: source=%s file_id=%s range=%s→%s (%.1fs) file_size=%s",
+             source, file_id, start_time, end_time, duration, _format_bytes(body.get("file_size", 0)))
 
     proxy_token = None
     file_size = body.get("file_size", 0)
@@ -414,21 +636,27 @@ async def cut_video(request: Request):
         }
         video_url = f"http://127.0.0.1:{PORT}/proxy/stream/{token}"
         proxy_token = token
+        log.debug("Cut using cookie auth, cookies_len=%d", len(cookies))
     elif source == "wetransfer":
         video_url = body.get("direct_url")
         if not video_url:
             raise HTTPException(400, "direct_url required for wetransfer source")
+        log.debug("Cut using WeTransfer direct URL")
     else:
         raise HTTPException(400, f"Unknown source: {source}")
 
     slug = body.get("filename", "cut").replace(" ", "_").replace("/", "_").replace("\\", "_")
-    out_name = f"{slug}_{uuid.uuid4().hex[:6]}.mp4"
+    cut_id = body.get("cut_id") or uuid.uuid4().hex[:8]
+    out_name = f"{slug}_{cut_id}.mp4"
     out_path = OUTPUT_DIR / out_name
 
-    cmd = ["ffmpeg", "-hide_banner"]
+    _cut_progress[cut_id] = {"path": str(out_path), "estimated_size": 0, "done": False}
+
+    cmd = [FFMPEG, "-hide_banner"]
     cmd += [
         "-reconnect", "1",
         "-reconnect_streamed", "1",
+        "-reconnect_on_http_error", "4xx,5xx",
         "-reconnect_delay_max", "5",
         "-ss", _seconds_to_hms(start_sec),
         "-i", video_url,
@@ -440,6 +668,7 @@ async def cut_video(request: Request):
         str(out_path),
     ]
 
+    log.debug("FFmpeg cmd: %s", " ".join(cmd))
     t0 = time.time()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -447,29 +676,38 @@ async def cut_video(request: Request):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        log.info("FFmpeg started: pid=%d cut_id=%s", proc.pid, cut_id)
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
         except asyncio.TimeoutError:
+            log.error("FFmpeg timed out after 600s: cut_id=%s pid=%d", cut_id, proc.pid)
             proc.kill()
             raise HTTPException(504, "FFmpeg timed out (10 min limit)")
         returncode = proc.returncode
         stderr_text = stderr.decode(errors="replace")
     except FileNotFoundError:
+        log.error("FFmpeg binary not found at: %s", FFMPEG)
         raise HTTPException(500, "FFmpeg not found. Install it: https://ffmpeg.org")
     finally:
         if proxy_token:
             _proxy_registry.pop(proxy_token, None)
+        _cut_progress[cut_id]["done"] = True
 
     elapsed = round(time.time() - t0, 1)
 
     if returncode != 0:
+        _cut_progress.pop(cut_id, None)
         err_tail = "\n".join(stderr_text.strip().splitlines()[-8:])
+        log.error("FFmpeg failed (exit %d) cut_id=%s elapsed=%.1fs:\n%s", returncode, cut_id, elapsed, err_tail)
         return JSONResponse({"error": "FFmpeg failed", "details": err_tail}, status_code=500)
 
     if not out_path.exists() or out_path.stat().st_size == 0:
+        _cut_progress.pop(cut_id, None)
+        log.error("FFmpeg produced empty output: cut_id=%s path=%s", cut_id, out_path)
         return JSONResponse({"error": "Output file is empty"}, status_code=500)
 
     out_size = out_path.stat().st_size
+    log.info("Cut complete: cut_id=%s size=%s elapsed=%.1fs output=%s", cut_id, _format_bytes(out_size), elapsed, out_name)
     return {
         "success": True,
         "filename": out_name,
@@ -477,22 +715,64 @@ async def cut_video(request: Request):
         "sizeFormatted": _format_bytes(out_size),
         "elapsed": elapsed,
         "download_url": f"/download/{out_name}",
+        "cut_id": cut_id,
     }
+
+
+@app.get("/cut/progress/{cut_id}")
+async def cut_progress(cut_id: str):
+    entry = _cut_progress.get(cut_id)
+    if not entry:
+        raise HTTPException(404, "Unknown cut")
+    current_size = 0
+    try:
+        p = Path(entry["path"])
+        if p.exists():
+            current_size = p.stat().st_size
+    except OSError:
+        pass
+    pct = 0
+    if entry["estimated_size"] > 0:
+        pct = min(99, int(100 * current_size / entry["estimated_size"]))
+    if entry["done"]:
+        pct = 100
+    return {"cut_id": cut_id, "current_size": current_size, "estimated_size": entry["estimated_size"],
+            "percent": pct, "done": entry["done"],
+            "currentFormatted": _format_bytes(current_size)}
 
 
 @app.get("/download/{filename}")
 async def download(filename: str):
     path = OUTPUT_DIR / filename
     if not path.exists():
+        log.warning("Download not found: %s", filename)
         raise HTTPException(404, "File not found")
-    return FileResponse(path, filename=filename, media_type="video/mp4")
+
+    log.info("Download served: %s (%s)", filename, _format_bytes(path.stat().st_size))
+
+    async def cleanup():
+        await asyncio.sleep(5)
+        try:
+            path.unlink()
+            log.debug("Auto-deleted: %s", filename)
+        except OSError:
+            pass
+        for cid, entry in list(_cut_progress.items()):
+            if entry["path"] == str(path):
+                _cut_progress.pop(cid, None)
+
+    response = FileResponse(path, filename=filename, media_type="video/mp4")
+    asyncio.get_event_loop().create_task(cleanup())
+    return response
 
 
 # ---------------------------------------------------------------------------
 # Entry
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    log.info("Starting Drive Cutter on http://localhost:%d", PORT)
     print(f"\n  Drive Cutter → http://localhost:{PORT}")
+    print(f"  Logs → {LOG_DIR / 'server.log'}")
     if IDLE_TIMEOUT > 0:
         print(f"  Auto-shutdown after {IDLE_TIMEOUT}s idle\n")
     else:

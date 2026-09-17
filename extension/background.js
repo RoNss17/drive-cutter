@@ -12,21 +12,22 @@ async function checkServer() {
   return false;
 }
 
-async function ensureServer() {
-  if (await checkServer()) return true;
+let lastNativeError = "";
 
+function tryNativeHost() {
   return new Promise((resolve) => {
     let port;
     try {
       port = chrome.runtime.connectNative(NATIVE_HOST);
-    } catch {
+    } catch (e) {
+      lastNativeError = e.message || "connectNative threw";
       resolve(false);
       return;
     }
 
     let settled = false;
     const timeout = setTimeout(() => {
-      if (!settled) { settled = true; resolve(false); }
+      if (!settled) { settled = true; lastNativeError = "Timeout (15s)"; resolve(false); }
     }, 15000);
 
     port.onMessage.addListener((msg) => {
@@ -42,10 +43,22 @@ async function ensureServer() {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
+        lastNativeError = chrome.runtime.lastError?.message || "Native host disconnected";
         resolve(false);
       }
     });
   });
+}
+
+async function ensureServer() {
+  if (await checkServer()) return true;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ok = await tryNativeHost();
+    if (ok) return true;
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
 }
 
 async function proxyRequest(path, options = {}) {
@@ -111,7 +124,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "ensure-server") {
-    ensureServer().then((ok) => sendResponse({ ok }));
+    ensureServer().then((ok) => sendResponse({ ok, error: ok ? null : lastNativeError }));
     return true;
   }
 

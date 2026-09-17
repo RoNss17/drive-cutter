@@ -2,21 +2,11 @@
 
 Cut segments from Google Drive and WeTransfer videos without downloading the full file.
 
-Uses FFmpeg HTTP Range requests — pulling 2 minutes from a 4-hour video downloads ~2% of the file, not 100%.
-
-**No login or API keys required.** Works with any publicly shared Drive link or WeTransfer transfer. For private Drive files, the Chrome extension uses your existing browser session.
+FFmpeg reads the source over HTTP Range requests, so pulling 2 minutes from a 4-hour video downloads roughly 2% of the file. No login, no API keys — for private Drive files the Chrome extension reuses your existing browser session.
 
 ---
 
-## Quick Setup (macOS / Linux, ~2 minutes)
-
-### Prerequisites
-
-- **Python 3.9+** — `brew install python3` or `sudo apt install python3 python3-venv`
-- **FFmpeg** — `brew install ffmpeg` or `sudo apt install ffmpeg`
-- **Google Chrome**
-
-### Install
+## Install (macOS / Linux, ~2 minutes)
 
 ```bash
 cd drive-cutter
@@ -24,76 +14,77 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The script will:
-1. Check prerequisites
-2. Create a Python virtual environment and install dependencies
-3. Walk you through loading the Chrome extension
-4. Register the native messaging host with your extension ID
+The script:
+1. Finds Python 3.9+ (or installs a private copy with [uv](https://docs.astral.sh/uv/) — no Homebrew or Xcode needed)
+2. Downloads a static FFmpeg into `bin/` (falls back to Homebrew/apt only if that fails)
+3. Registers the native messaging host and opens Chrome so you can **Load unpacked** → select the `extension` folder
 
-After it finishes, restart Chrome.
+Then quit Chrome fully (Cmd+Q) and reopen it.
+
+**Windows:** run `install.bat`. The Windows path is untested — please report what breaks.
+
+> Keep the folder somewhere permanent like `~/drive-cutter`. Do **not** leave it in `~/Downloads` — macOS revokes Chrome's access to Downloads across restarts and the extension silently unloads.
 
 ---
 
 ## Usage
 
-1. Open a **Google Drive** video page (`drive.google.com/file/d/.../view`) or a **WeTransfer** preview page
-2. The **Drive Cutter** panel appears in the bottom-right corner
-3. Use the ⏱ buttons to capture the current playhead position, or type times manually
-4. Click **Cut** — the server starts automatically if needed
-5. Click **Download** when ready
+1. Open a Google Drive video page (`drive.google.com/file/d/…/view`) or a WeTransfer preview page
+2. The **Drive Cutter** panel appears bottom-right
+3. Use the ⏱ buttons to capture the playhead, or type times as `HH:MM:SS`
+4. Click **Cut** — the local server starts on demand
+5. Click **Download** when it finishes; the temp file is deleted a few seconds after download
 
-You can add multiple segments and cut them all at once.
-
----
-
-## Sharing with others
-
-1. Share the `drive-cutter/` folder (zip, git clone, airdrop, etc.)
-2. They run `./install.sh`
-3. Done
+Multiple segments cut in parallel.
 
 ---
 
 ## How it works
 
-- **`-ss` before `-i`** — FFmpeg seeks via HTTP Range requests, not by downloading from the start
-- **`-c copy`** — stream copy, no re-encoding (fast, lossless, snaps to nearest keyframe)
-- **Local proxy** — the server proxies Google Drive downloads to handle redirect/range quirks that FFmpeg can't
-- **Auto-start** — the Chrome extension uses Native Messaging to start the server on demand
-- **Auto-shutdown** — server stops after 10 minutes of inactivity
+- Chrome extension → native messaging → local FastAPI server (`app.py`) → FFmpeg
+- `-ss` before `-i` makes FFmpeg seek with HTTP Range requests instead of reading from the start
+- `-c copy` stream-copies (no re-encode; cuts snap to the nearest keyframe)
+- A local proxy sits between FFmpeg and Google Drive. Drive returns an HTML "quota exceeded" page instead of bytes when a single Range is too large or requests arrive too fast, so the proxy requests small chunks, retries those pages with backoff, and stitches the chunks into one continuous stream with read-ahead
+- Server auto-stops after 10 minutes idle; output files are cleaned up on start and after download
 
-### WeTransfer
-
-The server calls WeTransfer's API to get a signed CloudFront URL (10-min expiry), which also supports Range requests.
+Logs: `logs/server.log`, rotated daily, kept 7 days. Look there first when something fails.
 
 ---
 
-## Project structure
-
-```
-drive-cutter/
-├── app.py                  FastAPI server
-├── requirements.txt        fastapi + uvicorn
-├── install.sh              One-time setup (run this)
-├── register-extension.sh   Re-register extension ID if needed
-├── static/index.html       Standalone web UI (optional)
-├── extension/
-│   ├── manifest.json       Chrome MV3 manifest
-│   ├── background.js       Service worker
-│   ├── content.js          Injected panel on Drive/WeTransfer
-│   ├── content.css         Panel styles
-│   ├── popup.html/js       Extension popup
-│   └── icon*.png           Icons
-└── native-host/
-    └── host.py             Starts server on demand via Native Messaging
-```
-
-## Configuration (optional)
+## Configuration (environment variables)
 
 | Variable | Default | Description |
 |---|---|---|
-| `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `8000` | Server port |
-| `IDLE_TIMEOUT` | `600` | Auto-shutdown delay in seconds (0 = off) |
+| `IDLE_TIMEOUT` | `600` | Auto-shutdown after N seconds idle (0 = never) |
+| `DRIVE_CHUNK_MB` | `10` | Size of each upstream request to Drive. 10 is known-good; 500 fails. Larger is faster if Drive accepts it |
+| `DRIVE_PREFETCH` | `1` | Extra chunks fetched ahead while streaming. Higher = faster, but more likely to trip Drive's rate limit |
 
-Set via environment variables: `PORT=9000 ./venv/bin/python app.py`
+Set before starting: `DRIVE_CHUNK_MB=25 ./venv/bin/python app.py`
+
+---
+
+## Sharing
+
+```bash
+./build-release.sh     # → dist/Drive-Cutter-Mac-vX.Y.zip, dist/Drive-Cutter-Windows-vX.Y.zip
+```
+
+---
+
+## Project layout
+
+```
+drive-cutter/
+├── app.py                 FastAPI server: Drive/WeTransfer info, proxy, cut, download
+├── requirements.txt       fastapi + uvicorn
+├── install.sh / .bat      One-time setup
+├── build-release.sh       Produces the zips in dist/
+├── setup.md               This file
+├── MISTAKES.md            Mistakes & learnings log — read before changing the proxy
+├── extension/             Chrome MV3 extension (manifest, background, content, popup)
+├── native-host/host.py    Starts the server on demand via native messaging
+├── bin/ffmpeg             Static FFmpeg (created by install.sh, gitignored)
+├── venv/                  Python env (created by install.sh, gitignored)
+└── logs/                  Server logs (gitignored)
+```
