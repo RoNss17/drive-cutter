@@ -4,6 +4,27 @@ A running log of mistakes made while building/debugging, and what we learned. Re
 
 ---
 
+## 2026-09-18 — "Drive is rate-limiting the account" was wrong for half a day
+
+**What broke:** Every cut across a 12-hour span returned Drive's `<title>Google Drive - Quota exceeded</title>` HTML page instead of bytes. `bytes=0-0` probes worked at 05:12; the same probe at 05:26 failed. Cuts that had worked the previous morning stopped working entirely.
+
+**What I told the user:** "This is Google throttling bytes-per-account. It'll clear in a few hours. Meanwhile, no size experiment can run — every attempt is measuring the throttle, not the cap." I even suggested making a copy of the file, waiting 24 h, or switching accounts. The user kept saying they'd cut 24 clips the previous day without issue, and asked if the problem could be on our side. I doubled down on the throttle theory instead of listening.
+
+**What it actually was:** Google silently deprecated the `confirm=t` shortcut on `drive.usercontent.google.com/download`. That shortcut used to bypass the "Google Drive can't scan this file for viruses" warning for large files. It now returns an HTML page with a `<form>` whose action URL carries a fresh `confirm` token and a `uuid` parameter — only *that* URL serves bytes. Our proxy was still using `confirm=t`, so every cut fetched the HTML warning page and FFmpeg saw "Invalid data".
+
+The page title also happens to say "Quota exceeded" for some sub-types of the warning, which is what made me lock onto the wrong theory. When the user tested the URL directly in the browser they saw the *other* variant of the same page — "can't scan this file for viruses" with a "Download anyway" button — which was the clue that finally cracked it. That form is exactly what we needed to submit.
+
+**Fix:** When the proxy sees `text/html` from Drive, parse the page for the `<form action>` URL plus its `<input name="confirm">` and `<input name="uuid">` values, then re-request the same Range against the form's action URL with those values as query parameters. Cache the resolved URL per proxy-registry entry so later chunks skip the parse. Same bypass in the cookie-info endpoint, so the panel gets the real filename and size instead of "video.mp4 · 2.5 KB" (the size of the HTML page). This is essentially what `gdown` does.
+
+**Learnings:**
+- **Trust the user's history harder than my own theory.** They said "I did 24 clips yesterday" three times before I stopped. Every time I heard it, my first instinct was to explain it away ("maybe the account budget was fresh yesterday"). It wasn't — I was wrong.
+- **Google's page titles lie.** The virus-scan warning and the real quota-exceeded page share DOM ancestors and one variant is titled "Quota exceeded". Match on *body content* (`can't scan this file`, `Too many users`), not `<title>`, when classifying rejection pages.
+- **When a "workaround" is a magic query param, check whether it still works, occasionally.** `confirm=t` was a one-line hack that had worked for years. Nothing in our tests would have caught its silent deprecation until real users hit it. This class of dependency deserves a note in the code: "if Drive stops serving bytes here, the bypass token format has changed — see [[drive-endpoint-limits]]." Added.
+- **A definitive user-side test beats hours of server-side theorizing.** "Open this URL in your signed-in browser and tell me what page you see" took 30 seconds and answered the question the logs couldn't. That should have been step one, not step ten.
+- **Two-page interpretations of the same HTML.** I looked at the raw response body four times over the day and never noticed the class of page had changed. Log the response's `<title>` and the first 200 chars of `<body>` on every HTML error, not just the first 8 KB of raw markup — much easier to eyeball.
+
+---
+
 ## 2026-09-17 — "10 MB is safe" was only half the story
 
 **What we found:** After reverting to 10 MB chunks and getting a successful cut, the log showed Drive returned the *same* "Quota exceeded" HTML on the last chunk of that successful cut — at 10 MB. The cut only survived because FFmpeg already had enough bytes.

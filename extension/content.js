@@ -216,7 +216,7 @@
       const authRes = await api(`/drive/cookie-info/${fileId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies }),
+        body: JSON.stringify({ cookies, ua: navigator.userAgent }),
       });
       if (authRes.ok) {
         state.file = authRes.data;
@@ -408,6 +408,7 @@
         filename: f.name.replace(/\.[^.]+$/, ""),
         file_size: f.size || 0,
         source,
+        ua: navigator.userAgent,
       };
 
       if (source === "drive_public" && f.accessMode === "cookie" && f.cookies) {

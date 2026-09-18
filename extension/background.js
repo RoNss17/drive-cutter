@@ -71,13 +71,16 @@ async function proxyRequest(path, options = {}) {
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "get-drive-cookies") {
+    // Exactly what the browser itself would send to drive.usercontent.google.com —
+    // no name filter, so newer session cookies (__Secure-*PSIDTS, *PSIDCC) are included.
+    const hosts = new Set([
+      "google.com", ".google.com",
+      "usercontent.google.com", ".usercontent.google.com",
+      "drive.usercontent.google.com", ".drive.usercontent.google.com",
+    ]);
     chrome.cookies.getAll({ domain: ".google.com" }, (cookies) => {
       const relevant = cookies
-        .filter((c) => c.name.startsWith("SID") || c.name.startsWith("HSID") ||
-                       c.name.startsWith("SSID") || c.name === "NID" ||
-                       c.name.startsWith("SAPISID") || c.name.startsWith("APISID") ||
-                       c.name === "__Secure-1PSID" || c.name === "__Secure-3PSID" ||
-                       c.name === "__Secure-1PAPISID" || c.name === "__Secure-3PAPISID")
+        .filter((c) => hosts.has(c.domain))
         .map((c) => `${c.name}=${c.value}`)
         .join("; ");
       sendResponse({ cookies: relevant });

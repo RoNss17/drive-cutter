@@ -274,13 +274,26 @@ DRIVE_COOKIE_URL = DRIVE_PUBLIC_URL
 async def drive_cookie_info(file_id: str, request: Request):
     body = await request.json()
     cookies = body.get("cookies", "")
-    log.info("Cookie info request: file_id=%s cookies_len=%d", file_id, len(cookies))
+    ua = body.get("ua", "")
+    log.info("Cookie info request: file_id=%s cookies_len=%d ua=%s", file_id, len(cookies), ua[:40])
     url = DRIVE_COOKIE_URL.format(file_id)
-    req = urllib.request.Request(url)
-    req.add_header("Range", "bytes=0-0")
-    req.add_header("Cookie", cookies)
+
+    def probe(u: str):
+        req = _drive_request(u, cookies, "bytes=0-0", ua)
+        return urllib.request.urlopen(req, None, 30)
+
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        resp = probe(url)
+        # Drive's virus-scan warning: parse the form, retry against the bypass URL
+        if "text/html" in resp.headers.get("Content-Type", ""):
+            resp.close()
+            resolved = _resolve_download_url(url, cookies, ua)
+            if resolved == url:
+                raise HTTPException(403, "Drive returned a warning page and no bypass form was found — file may be quota-limited")
+            log.info("Cookie info: resolved via virus-scan bypass")
+            url = resolved  # use resolved URL for the eventual proxy stream too
+            resp = probe(resolved)
+        with resp:
             log.debug("Cookie info response: url=%s ct=%s cr=%s", resp.url, resp.headers.get("Content-Type"), resp.headers.get("Content-Range"))
             cd = resp.headers.get("Content-Disposition", "")
             name = "video.mp4"
@@ -297,6 +310,9 @@ async def drive_cookie_info(file_id: str, request: Request):
     except (urllib.error.HTTPError, urllib.error.URLError) as e:
         log.error("Cookie auth failed for %s: %s", file_id, e)
         raise HTTPException(403, f"Cookie auth failed: {e}")
+    if "text/html" in mime:
+        log.warning("Cookie info still HTML after resolve for %s", file_id)
+        raise HTTPException(403, "Drive returned a web page instead of video data — the bypass form has changed shape")
     if size == 0:
         log.warning("Cookie info returned size=0 for %s — cookies may be stale", file_id)
         raise HTTPException(403, "Could not determine file size — cookies may be invalid")
@@ -401,19 +417,68 @@ class _DriveHTMLError(Exception):
         self.body = body
 
 
-def _fetch_range(url: str, cookies: str, start: int, end: int):
+DEFAULT_UA = "Mozilla/5.0"
+
+
+def _drive_request(url: str, cookies: str, range_header: str, ua: str = "") -> urllib.request.Request:
+    """A request shaped like the browser's own download request."""
+    req = urllib.request.Request(url)
+    if cookies:
+        req.add_header("Cookie", cookies)
+    req.add_header("Range", range_header)
+    req.add_header("User-Agent", ua or DEFAULT_UA)
+    req.add_header("Accept", "*/*")
+    req.add_header("Accept-Language", "en-US,en;q=0.9")
+    req.add_header("Referer", "https://drive.google.com/")
+    return req
+
+
+def _resolve_download_url(url: str, cookies: str, ua: str) -> str:
+    """When Drive returns its "can't scan for viruses" warning page instead of
+    bytes, the page contains a <form> whose action URL carries a fresh `confirm`
+    token and a `uuid`. Post the form (or GET the action with its inputs) and
+    Drive starts serving the file. `confirm=t` alone stopped working somewhere
+    in 2024; this replaces it. Returns the URL that actually serves bytes.
+    Cached per registry entry so subsequent chunks skip the round-trip.
+    """
+    req = _drive_request(url, cookies, "bytes=0-", ua)
+    resp = urllib.request.urlopen(req, None, 30)
+    ct = resp.headers.get("Content-Type", "")
+    if "text/html" not in ct:
+        resp.close()
+        return url  # Drive is willing to serve directly — no bypass needed
+    html = resp.read(65536).decode(errors="replace")
+    resp.close()
+
+    # The warning page's form looks like:
+    #   <form action="https://drive.usercontent.google.com/download">
+    #     <input name="id" value="…"><input name="export" value="download">
+    #     <input name="confirm" value="…"><input name="uuid" value="…">
+    action = re.search(r'<form[^>]+action="([^"]+)"', html)
+    inputs = dict(re.findall(r'<input[^>]+name="([^"]+)"[^>]+value="([^"]+)"', html))
+    if action and inputs.get("confirm"):
+        base = action.group(1).replace("&amp;", "&")
+        qs = urllib.parse.urlencode(inputs)
+        return f"{base}?{qs}" if "?" not in base else f"{base}&{qs}"
+    # Some variants (older page) put the whole retry URL in an <a href="/uc?…confirm=…">
+    href = re.search(r'href="(/uc\?[^"]*confirm=[^"]*)"', html)
+    if href:
+        return "https://drive.google.com" + href.group(1).replace("&amp;", "&")
+    return url  # unknown page shape — let the caller see the HTML
+
+
+def _fetch_range(url: str, cookies: str, start: int, end: int, ua: str = "", entry: dict | None = None):
     """Fetch bytes [start, end] from upstream in one request.
 
-    Returns (data, total_size_or_0, content_type). Drive's HTML rejection pages are
-    retried with exponential backoff; anything else propagates.
+    If Drive answers with its HTML warning page, resolve a new download URL
+    (parses the page's confirm/uuid token) and retry once. The resolved URL is
+    cached on `entry` so later chunks skip the parse. Anything still returning
+    HTML after that is treated as a genuine rejection and retried with backoff.
     """
     delay = 1.0
     for attempt in range(1, DRIVE_HTML_RETRIES + 1):
-        req = urllib.request.Request(url)
-        if cookies:
-            req.add_header("Cookie", cookies)
-        req.add_header("Range", f"bytes={start}-{end}")
-        req.add_header("User-Agent", "Mozilla/5.0")
+        effective = (entry.get("resolved_url") if entry else None) or url
+        req = _drive_request(effective, cookies, f"bytes={start}-{end}", ua)
         resp = urllib.request.urlopen(req, None, 30)
         ct = resp.headers.get("Content-Type", "")
         if "text/html" not in ct:
@@ -426,7 +491,17 @@ def _fetch_range(url: str, cookies: str, start: int, end: int):
             return data, total, ct
         body = resp.read(8192).decode(errors="replace")
         resp.close()
-        kind = "rate-limit" if ("Quota exceeded" in body or "Too many users" in body) else "html"
+        kind = ("rate-limit" if "Quota exceeded" in body or "Too many users" in body
+                else "virus-scan" if "can't scan this file" in body or "too large for Google to scan" in body
+                else "html")
+        # Once per stream: on the first virus-scan page, resolve the real download URL
+        # by parsing the form's confirm+uuid, then retry the same range against it.
+        if kind == "virus-scan" and entry is not None and not entry.get("resolved_url"):
+            resolved = _resolve_download_url(url, cookies, ua)
+            if resolved != url:
+                entry["resolved_url"] = resolved
+                log.info("Resolved Drive download URL via virus-scan bypass (confirm+uuid)")
+                continue  # retry same range immediately, no backoff
         if attempt == DRIVE_HTML_RETRIES:
             log.error("Drive %s page persisted after %d attempts for bytes=%d-%d:\n%s",
                       kind, attempt, start, end, body[:600])
@@ -440,8 +515,11 @@ def _fetch_range(url: str, cookies: str, start: int, end: int):
 def _html_error_message(err: _DriveHTMLError) -> str:
     if err.kind == "rate-limit":
         return ("Google Drive is rate-limiting this file (it reports 'quota exceeded'). "
-                "Wait a minute and try again. If it keeps happening, make a copy of the file "
-                "in your Drive (right-click → Make a copy) and cut from the copy.")
+                "Wait a few minutes and try again. If it keeps happening, make a copy of "
+                "the file in your Drive (right-click → Make a copy) and cut from the copy.")
+    if err.kind == "virus-scan":
+        return ("Google Drive's virus-scan warning page was returned and the bypass form "
+                "could not be parsed — the page shape may have changed. Check server logs.")
     return f"Google Drive returned a web page instead of video data: {err.body[:200]!r}"
 
 
@@ -454,6 +532,7 @@ async def proxy_stream(token: str, request: Request):
 
     url = entry["url"]
     cookies = entry["cookies"]
+    ua = entry.get("ua", "")
     total = entry.get("size", 0) or 0
 
     range_header = request.headers.get("range", "")
@@ -479,7 +558,7 @@ async def proxy_stream(token: str, request: Request):
     log.debug("Proxy stream request: bytes=%d-%s (first chunk %d-%d)", start, stop if stop is not None else "", start, first_end)
     try:
         first, learned_total, content_type = await asyncio.to_thread(
-            _fetch_range, url, cookies, start, first_end
+            _fetch_range, url, cookies, start, first_end, ua, entry
         )
     except urllib.error.HTTPError as e:
         log.error("Proxy upstream HTTP error: %d %s url=%s", e.code, e.reason, url[:80])
@@ -549,7 +628,7 @@ async def proxy_stream(token: str, request: Request):
             nonlocal next_start
             while len(pending) <= DRIVE_PREFETCH and next_start <= stop:
                 s, e = next_start, min(next_start + DRIVE_CHUNK - 1, stop)
-                pending.append(asyncio.ensure_future(asyncio.to_thread(_fetch_range, url, cookies, s, e)))
+                pending.append(asyncio.ensure_future(asyncio.to_thread(_fetch_range, url, cookies, s, e, ua, entry)))
                 next_start = e + 1
 
         buf = first
@@ -619,6 +698,7 @@ async def cut_video(request: Request):
         _proxy_registry[token] = {
             "url": upstream_url,
             "cookies": "",
+            "ua": body.get("ua", ""),
             "size": file_size,
             "created": time.time(),
         }
@@ -631,6 +711,7 @@ async def cut_video(request: Request):
         _proxy_registry[token] = {
             "url": upstream_url,
             "cookies": cookies,
+            "ua": body.get("ua", ""),
             "size": file_size,
             "created": time.time(),
         }
