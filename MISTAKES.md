@@ -25,6 +25,24 @@ The page title also happens to say "Quota exceeded" for some sub-types of the wa
 
 ---
 
+## 2026-09-18 — What Drive actually accepts (once the bypass works)
+
+**Measured on a 439 MB cut against a real Drive file after the confirm+uuid bypass landed** (same range, same file, only `DRIVE_CHUNK_MB` changed between runs):
+
+| Chunk | Streaming | Chunks | Total cut |
+|---:|---:|---:|---:|
+| 10 MB | 10.9 MB/s | 21 | 27.8 s |
+| 25 MB | 17.5 MB/s | 16 | 31.3 s |
+| 50 MB | **25.1 MB/s** | 10 | **29.7 s** |
+| 100 MB | 30.9 MB/s | 5 | 33.3 s |
+| 200 MB | 33.2 MB/s | 3 | 34.8 s |
+
+Every size worked — the "500 MB fails cold" note from 2026-09-17 was really the token bug in disguise. Peak streaming throughput is at 200 MB, but total *end-to-end* time is best at 50 MB because FFmpeg's initial seek probes ("read the first few KB, then cancel") get proportionally more expensive as the chunk grows (each probe downloads more before FFmpeg gives up). Default set to 50 MB.
+
+**Learning:** benchmark end-to-end wall-clock time, not just the streaming throughput inside one connection. The pipe getting faster doesn't help if you spent the win on wasted-and-cancelled bytes at the front of every stream.
+
+---
+
 ## 2026-09-17 — "10 MB is safe" was only half the story
 
 **What we found:** After reverting to 10 MB chunks and getting a successful cut, the log showed Drive returned the *same* "Quota exceeded" HTML on the last chunk of that successful cut — at 10 MB. The cut only survived because FFmpeg already had enough bytes.

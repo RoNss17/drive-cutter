@@ -57,7 +57,7 @@ Logs: `logs/server.log`, rotated daily, kept 7 days. Look there first when somet
 |---|---|---|
 | `PORT` | `8000` | Server port |
 | `IDLE_TIMEOUT` | `600` | Auto-shutdown after N seconds idle (0 = never) |
-| `DRIVE_CHUNK_MB` | `10` | Size of each upstream request to Drive. 10 is known-good; 500 fails. Larger is faster if Drive accepts it |
+| `DRIVE_CHUNK_MB` | `50` | Size of each upstream request to Drive. Peak throughput on a real cut. 10–200 MB all work; past ~100 MB the seek-probe overhead outweighs the extra throughput |
 | `DRIVE_PREFETCH` | `1` | Extra chunks fetched ahead while streaming. Higher = faster, but more likely to trip Drive's rate limit |
 
 Set before starting: `DRIVE_CHUNK_MB=25 ./venv/bin/python app.py`

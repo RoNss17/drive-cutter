@@ -80,13 +80,17 @@ FFMPEG = str(_BUNDLED_FFMPEG) if _BUNDLED_FFMPEG.exists() else (shutil.which("ff
 log.info("FFmpeg: %s", FFMPEG)
 log.info("Output dir: %s", OUTPUT_DIR)
 
-# Drive's download endpoint answers with an HTML "quota exceeded" page instead of
-# bytes when a single Range is too large (500 MB fails cold) and sometimes when
-# requests arrive too fast (seen at 10 MB). Keep upstream requests small and let
-# the proxy stitch them into one continuous stream for FFmpeg.
-DRIVE_CHUNK = int(os.getenv("DRIVE_CHUNK_MB", "10")) * 1024 * 1024
+# Upstream requests to Drive are capped at DRIVE_CHUNK and stitched back into
+# one continuous stream for FFmpeg. Measured 2026-09-18 on a 439 MB cut against
+# a real Drive file (all sizes worked, no HTML rejections):
+#   10 MB → 10.9 MB/s   50 MB → 25.1 MB/s   200 MB → 33.2 MB/s
+#   25 MB → 17.5 MB/s   100 MB → 30.9 MB/s
+# 50 MB is the sweet spot: 2.3× the 10 MB baseline, and past ~100 MB total
+# end-to-end time gets *worse* because FFmpeg's seek probes cancel the fetch
+# mid-chunk and bigger chunks make each cancel more expensive.
+DRIVE_CHUNK = int(os.getenv("DRIVE_CHUNK_MB", "50")) * 1024 * 1024
 DRIVE_PREFETCH = max(0, int(os.getenv("DRIVE_PREFETCH", "1")))  # extra chunks in flight
-DRIVE_HTML_RETRIES = 4
+DRIVE_HTML_RETRIES = max(1, int(os.getenv("DRIVE_HTML_RETRIES", "4")))
 
 DRIVE_PUBLIC_URL = (
     "https://drive.usercontent.google.com/download?id={}&export=download&confirm=t"
