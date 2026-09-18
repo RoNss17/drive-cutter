@@ -59,16 +59,18 @@ IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "600"))  # seconds, 0 = disabled
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "drive-cutter-output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Clean up old output files on startup
+# Clean up leftover output on startup — mp4s from finished cuts nobody
+# downloaded, .progress files from ffmpeg, and anything else in the dir.
 _cleaned = 0
-for _old in OUTPUT_DIR.glob("*.mp4"):
+for _old in OUTPUT_DIR.iterdir():
     try:
-        _old.unlink()
-        _cleaned += 1
+        if _old.is_file():
+            _old.unlink()
+            _cleaned += 1
     except OSError:
         pass
 if _cleaned:
-    log.info("Startup cleanup: removed %d old output file(s)", _cleaned)
+    log.info("Startup cleanup: removed %d leftover file(s)", _cleaned)
 
 # Ensure Homebrew paths are available (Chrome launches with a minimal PATH)
 for p in ["/opt/homebrew/bin", "/usr/local/bin"]:
@@ -605,6 +607,9 @@ async def proxy_stream(token: str, request: Request):
             gone.set()
             for f in pending:
                 f.cancel()
+            # Aggregate bytes fetched from Drive across every stream on this
+            # token, so /cut/progress can report total download progress.
+            entry["bytes_fetched"] = entry.get("bytes_fetched", 0) + sent
             elapsed = time.time() - t0
             rate = (sent / 1048576 / elapsed) if elapsed > 0 else 0.0
             log.info("Proxy stream closed: %s in %d chunk(s), %.1fs, %.1f MB/s%s",
@@ -735,7 +740,19 @@ async def cut_video(request: Request):
     out_name = f"{slug}_{cut_id}.mp4"
     out_path = OUTPUT_DIR / out_name
 
-    _cut_progress[cut_id] = {"path": str(out_path), "estimated_size": 0, "done": False}
+    progress_file = OUTPUT_DIR / f".{cut_id}.progress"
+    try:
+        progress_file.unlink()
+    except OSError:
+        pass
+    _cut_progress[cut_id] = {
+        "path": str(out_path),
+        "progress_file": str(progress_file),
+        "duration": duration,
+        "t0": time.time(),
+        "proxy_token": proxy_token,
+        "done": False,
+    }
 
     cmd = [FFMPEG, "-hide_banner"]
     cmd += [
@@ -749,6 +766,9 @@ async def cut_video(request: Request):
         "-c", "copy",
         "-movflags", "+faststart",
         "-avoid_negative_ts", "make_zero",
+        # -progress writes key=value blocks to this file every ~1s. The
+        # /cut/progress/{id} endpoint reads it for a real percent + ETA.
+        "-progress", str(progress_file),
         "-y",
         str(out_path),
     ]
@@ -782,6 +802,10 @@ async def cut_video(request: Request):
 
     if returncode != 0:
         _cut_progress.pop(cut_id, None)
+        try:
+            progress_file.unlink()
+        except OSError:
+            pass
         err_tail = "\n".join(stderr_text.strip().splitlines()[-8:])
         log.error("FFmpeg failed (exit %d) cut_id=%s elapsed=%.1fs:\n%s", returncode, cut_id, elapsed, err_tail)
         return JSONResponse({"error": "FFmpeg failed", "details": err_tail}, status_code=500)
@@ -804,26 +828,85 @@ async def cut_video(request: Request):
     }
 
 
+def _read_ffmpeg_progress(path: Path) -> dict:
+    """Return the last complete block from an FFmpeg -progress file, as a dict.
+    Blocks are terminated by a `progress=continue` or `progress=end` line."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return {}
+    # Split on "progress=..." lines; the last non-empty chunk is either the
+    # partially-written next block (no progress= yet) or the finalized last one.
+    parts = re.split(r"progress=(?:continue|end)\n?", text)
+    # Look at the last two "chunks": the finalized block before the last split,
+    # since anything after the final split is a fragment being written.
+    if len(parts) < 2:
+        return {}
+    last_block = parts[-2]
+    out = {}
+    for line in last_block.strip().splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
 @app.get("/cut/progress/{cut_id}")
 async def cut_progress(cut_id: str):
     entry = _cut_progress.get(cut_id)
     if not entry:
         raise HTTPException(404, "Unknown cut")
-    current_size = 0
-    try:
-        p = Path(entry["path"])
-        if p.exists():
-            current_size = p.stat().st_size
-    except OSError:
-        pass
-    pct = 0
-    if entry["estimated_size"] > 0:
-        pct = min(99, int(100 * current_size / entry["estimated_size"]))
+
+    duration = entry.get("duration", 0) or 0
+    t0 = entry.get("t0", time.time())
+    elapsed = time.time() - t0
+
+    # Real progress from FFmpeg's -progress file
+    percent = None
+    speed = None
+    progress = _read_ffmpeg_progress(Path(entry["progress_file"]))
+    if progress and duration > 0:
+        try:
+            out_us = int(progress.get("out_time_us", "0"))
+            processed = out_us / 1_000_000
+            percent = max(0.0, min(99.5, 100 * processed / duration))
+        except ValueError:
+            pass
+        sp = progress.get("speed", "")
+        if sp.endswith("x"):
+            try:
+                speed = float(sp[:-1])
+            except ValueError:
+                pass
+
     if entry["done"]:
-        pct = 100
-    return {"cut_id": cut_id, "current_size": current_size, "estimated_size": entry["estimated_size"],
-            "percent": pct, "done": entry["done"],
-            "currentFormatted": _format_bytes(current_size)}
+        percent = 100.0
+
+    # ETA: prefer speed-based (stable), else project from percent
+    eta = None
+    if not entry["done"]:
+        if speed and speed > 0.05 and duration > 0:
+            # remaining segment-seconds / speed = wall-clock seconds
+            remaining_segment = duration * (1 - (percent or 0) / 100)
+            eta = remaining_segment / speed
+        elif percent and percent > 5:
+            eta = elapsed * (100 - percent) / percent
+
+    # Bytes actually pulled from Drive (aggregated across all range requests)
+    bytes_fetched = 0
+    tok = entry.get("proxy_token")
+    if tok:
+        bytes_fetched = _proxy_registry.get(tok, {}).get("bytes_fetched", 0)
+
+    return {
+        "cut_id": cut_id,
+        "percent": round(percent, 1) if percent is not None else None,
+        "eta_seconds": round(eta, 1) if eta is not None else None,
+        "elapsed_seconds": round(elapsed, 1),
+        "bytes_fetched": bytes_fetched,
+        "bytes_fetched_formatted": _format_bytes(bytes_fetched) if bytes_fetched else "",
+        "done": entry["done"],
+    }
 
 
 @app.get("/download/{filename}")
@@ -844,6 +927,12 @@ async def download(filename: str):
             pass
         for cid, entry in list(_cut_progress.items()):
             if entry["path"] == str(path):
+                pf = entry.get("progress_file")
+                if pf:
+                    try:
+                        Path(pf).unlink()
+                    except OSError:
+                        pass
                 _cut_progress.pop(cid, None)
 
     response = FileResponse(path, filename=filename, media_type="video/mp4")

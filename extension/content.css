@@ -282,6 +282,12 @@
   border-radius: 2px;
   animation: dc-slide 1.2s ease-in-out infinite;
 }
+/* Real progress: cancel the sliding animation, use inline width and grow it. */
+.dc-progress-fill.dc-progress-real {
+  animation: none;
+  transform: none;
+  transition: width 500ms ease-out;
+}
 @keyframes dc-slide {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(250%); }

@@ -308,11 +308,20 @@
           </div>`;
         }
         if (seg.cutting) {
+          const pct = seg.progress?.percent;
+          const eta = seg.progress?.etaFormatted;
+          const fetched = seg.progress?.bytesFetched;
+          const elapsed = seg.progress?.elapsedFormatted || "0s";
+          const barClass = pct != null ? "dc-progress-fill dc-progress-real" : "dc-progress-fill";
+          const barStyle = pct != null ? `style="width:${pct}%"` : "";
+          const rightLine = fetched
+            ? `${esc(fetched)} · ${esc(elapsed)}`
+            : `${esc(elapsed)}`;
           return `<div class="dc-seg">
             <div class="dc-seg-head">Segment ${i + 1} · ${esc(seg.start)} → ${esc(seg.end)}</div>
-            <div class="dc-cutting">Cutting…</div>
-            <div class="dc-progress-bar"><div class="dc-progress-fill"></div></div>
-            <div class="dc-progress-size" data-seg="${seg.id}">${esc(seg.progressSize || "")}</div>
+            <div class="dc-cutting" data-seg-status="${seg.id}">Cutting…${eta ? " " + esc(eta) : ""}</div>
+            <div class="dc-progress-bar"><div class="${barClass}" data-seg-fill="${seg.id}" ${barStyle}></div></div>
+            <div class="dc-progress-size" data-seg="${seg.id}">${rightLine}</div>
           </div>`;
         }
         return `<div class="dc-seg">
@@ -397,7 +406,7 @@
     const source = f.source || "drive_public";
     seg.cutting = true;
     seg.error = null;
-    seg.progressSize = "";
+    seg.progress = { startedAt: Date.now() };
     renderCutUI();
 
     try {
@@ -441,21 +450,58 @@
         body: JSON.stringify(cutBody),
       });
 
-      // Poll progress while cut is running. Patch the size label in place rather than
-      // re-rendering the panel, so typing in another segment's inputs isn't interrupted.
+      // Two loops: a fast client-side tick for the elapsed timer, and a slower
+      // server poll for the real percent + ETA + bytes-fetched. Both patch the
+      // DOM in place so typing in another segment isn't interrupted.
+      const fmtSecs = (s) => {
+        s = Math.max(0, Math.round(s));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return r ? `${m}m ${r}s` : `${m}m`;
+      };
+      const paintDom = () => {
+        const p = seg.progress;
+        if (!p) return;
+        const status = document.querySelector(`.dc-cutting[data-seg-status="${seg.id}"]`);
+        const fill = document.querySelector(`.dc-progress-fill[data-seg-fill="${seg.id}"]`);
+        const right = document.querySelector(`.dc-progress-size[data-seg="${seg.id}"]`);
+        if (status) status.textContent = `Cutting…${p.etaFormatted ? " " + p.etaFormatted : ""}`;
+        if (fill) {
+          if (p.percent != null) {
+            fill.classList.add("dc-progress-real");
+            fill.style.width = p.percent + "%";
+          }
+        }
+        if (right) {
+          right.textContent = p.bytesFetched
+            ? `${p.bytesFetched} · ${p.elapsedFormatted}`
+            : p.elapsedFormatted;
+        }
+      };
+
+      const tickInterval = setInterval(() => {
+        if (!seg.progress) return;
+        seg.progress.elapsedFormatted = fmtSecs((Date.now() - seg.progress.startedAt) / 1000);
+        paintDom();
+      }, 500);
+
       const pollInterval = setInterval(async () => {
         try {
           const prog = await api(`/cut/progress/${cutId}`);
-          if (prog.ok && prog.data) {
-            seg.progressSize = prog.data.currentFormatted;
-            const label = document.querySelector(`.dc-progress-size[data-seg="${seg.id}"]`);
-            if (label) label.textContent = seg.progressSize;
+          if (prog.ok && prog.data && seg.progress) {
+            const d = prog.data;
+            seg.progress.percent = d.percent;
+            seg.progress.bytesFetched = d.bytes_fetched_formatted || "";
+            seg.progress.etaFormatted = d.eta_seconds != null ? `~${fmtSecs(d.eta_seconds)}` : "";
+            paintDom();
           }
         } catch {}
-      }, 1500);
+      }, 1000);
 
       const res = await cutPromise;
       clearInterval(pollInterval);
+      clearInterval(tickInterval);
 
       if (res.ok && res.data.success) {
         seg.result = {
@@ -472,6 +518,7 @@
       seg.error = { message: e.message };
     }
     seg.cutting = false;
+    seg.progress = null;
     renderCutUI();
   }
 
