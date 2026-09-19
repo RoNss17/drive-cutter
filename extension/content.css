@@ -255,3 +255,61 @@
 .dc-btn-back {
   margin-top: 6px;
 }
+
+.dc-btn-retry {
+  background: #5b9cf5;
+  border-color: #5b9cf5;
+  color: #000;
+  font-weight: 600;
+}
+.dc-btn-retry:hover { background: #3d7ae0; }
+
+.dc-btn-stop {
+  margin-top: 8px;
+  background: transparent;
+  border-color: #3a1a1a;
+  color: #f06060;
+  padding: 5px 12px;
+  font-size: 11px;
+}
+.dc-btn-stop:hover {
+  background: #2a1010;
+  border-color: #f06060;
+  color: #f06060;
+}
+.dc-btn-stop:disabled { opacity: 0.5; cursor: default; }
+
+.dc-actions-center {
+  justify-content: center;
+}
+
+.dc-progress-bar {
+  height: 3px;
+  background: #252525;
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+.dc-progress-fill {
+  height: 100%;
+  width: 40%;
+  background: #5b9cf5;
+  border-radius: 2px;
+  animation: dc-slide 1.2s ease-in-out infinite;
+}
+/* Real progress: cancel the sliding animation, use inline width and grow it. */
+.dc-progress-fill.dc-progress-real {
+  animation: none;
+  transform: none;
+  transition: width 500ms ease-out;
+}
+@keyframes dc-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.dc-progress-size {
+  font-size: 10px;
+  color: #737373;
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 3px;
+}

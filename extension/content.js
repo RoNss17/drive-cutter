@@ -180,7 +180,13 @@
     });
 
     if (!serverResult?.ok) {
-      body.innerHTML = `<div class="dc-status dc-error">Could not start server.<br>Run <code>install.sh</code> first.</div>`;
+      const errDetail = serverResult?.error ? `<div class="dc-status" style="font-size:10px;color:#888;word-break:break-word;">${esc(serverResult.error)}</div>` : "";
+      body.innerHTML = `<div class="dc-status dc-error">Could not start server.</div>
+        ${errDetail}
+        <div class="dc-actions dc-actions-center">
+          <button class="dc-btn dc-btn-retry" id="dc-retry">Retry</button>
+        </div>`;
+      document.getElementById("dc-retry").addEventListener("click", () => init());
       return;
     }
     state.serverOk = true;
@@ -210,7 +216,7 @@
       const authRes = await api(`/drive/cookie-info/${fileId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies }),
+        body: JSON.stringify({ cookies, ua: navigator.userAgent }),
       });
       if (authRes.ok) {
         state.file = authRes.data;
@@ -302,9 +308,21 @@
           </div>`;
         }
         if (seg.cutting) {
+          const pct = seg.progress?.percent;
+          const eta = seg.progress?.etaFormatted;
+          const fetched = seg.progress?.bytesFetched;
+          const elapsed = seg.progress?.elapsedFormatted || "0s";
+          const barClass = pct != null ? "dc-progress-fill dc-progress-real" : "dc-progress-fill";
+          const barStyle = pct != null ? `style="width:${pct}%"` : "";
+          const rightLine = fetched
+            ? `${esc(fetched)} · ${esc(elapsed)}`
+            : `${esc(elapsed)}`;
           return `<div class="dc-seg">
-            <div class="dc-seg-head">Segment ${i + 1}</div>
-            <div class="dc-cutting">Cutting…</div>
+            <div class="dc-seg-head">Segment ${i + 1} · ${esc(seg.start)} → ${esc(seg.end)}</div>
+            <div class="dc-cutting" data-seg-status="${seg.id}">Cutting…${eta ? " " + esc(eta) : ""}</div>
+            <div class="dc-progress-bar"><div class="${barClass}" data-seg-fill="${seg.id}" ${barStyle}></div></div>
+            <div class="dc-progress-size" data-seg="${seg.id}">${rightLine}</div>
+            <button class="dc-btn dc-btn-stop" data-stop="${seg.id}">Stop</button>
           </div>`;
         }
         return `<div class="dc-seg">
@@ -373,6 +391,22 @@
     });
     const cutBtn = document.getElementById("dc-cut");
     if (cutBtn) cutBtn.addEventListener("click", cutAll);
+    body.querySelectorAll(".dc-btn-stop").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const segId = btn.dataset.stop;
+        const seg = state.segments.find((s) => s.id == segId);
+        if (!seg || !seg.progress?.cutId) return;
+        btn.disabled = true;
+        btn.textContent = "Stopping…";
+        try {
+          await api(`/cut/cancel?cut_id=${encodeURIComponent(seg.progress.cutId)}`, { method: "POST" });
+        } catch {}
+        seg.cutting = false;
+        seg.progress = null;
+        seg.error = { message: "Cancelled" };
+        renderCutUI();
+      });
+    });
     const addBtn = document.getElementById("dc-add");
     if (addBtn)
       addBtn.addEventListener("click", () => {
@@ -384,70 +418,133 @@
     if (backBtn) backBtn.addEventListener("click", () => renderFileList());
   }
 
-  async function cutAll() {
+  async function cutOne(seg) {
     const f = state.file;
     const source = f.source || "drive_public";
-    const toCut = state.segments.filter((s) => !s.result && !s.cutting && s.end);
-    if (toCut.length === 0) return;
+    seg.cutting = true;
+    seg.error = null;
+    seg.progress = { startedAt: Date.now() };
+    renderCutUI();
 
-    for (const seg of toCut) {
-      seg.cutting = true;
-      seg.error = null;
-      renderCutUI();
+    try {
+      let cutBody = {
+        file_id: f.id,
+        start_time: seg.start || "00:00:00",
+        end_time: seg.end,
+        filename: f.name.replace(/\.[^.]+$/, ""),
+        file_size: f.size || 0,
+        source,
+        ua: navigator.userAgent,
+      };
 
-      try {
-        let cutBody = {
-          file_id: f.id,
-          start_time: seg.start || "00:00:00",
-          end_time: seg.end,
-          filename: f.name.replace(/\.[^.]+$/, ""),
-          file_size: f.size || 0,
-          source,
-        };
+      if (source === "drive_public" && f.accessMode === "cookie" && f.cookies) {
+        cutBody.source = "drive_cookie";
+        cutBody.cookies = f.cookies;
+      }
 
-        if (source === "drive_public" && f.accessMode === "cookie" && f.cookies) {
-          cutBody.source = "drive_cookie";
-          cutBody.cookies = f.cookies;
-        }
-
-        if (source === "wetransfer" && state.wtContext) {
-          const urlRes = await api("/wetransfer/download-url", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              transfer_id: state.wtContext.transfer_id,
-              security_hash: state.wtContext.security_hash,
-              api_base: state.wtContext.api_base,
-              file_id: f.id,
-            }),
-          });
-          if (!urlRes.ok) throw new Error("Failed to get download URL");
-          cutBody.direct_url = urlRes.data.direct_link;
-        }
-
-        const res = await api("/cut", {
+      if (source === "wetransfer" && state.wtContext) {
+        const urlRes = await api("/wetransfer/download-url", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(cutBody),
+          body: JSON.stringify({
+            transfer_id: state.wtContext.transfer_id,
+            security_hash: state.wtContext.security_hash,
+            api_base: state.wtContext.api_base,
+            file_id: f.id,
+          }),
         });
-
-        if (res.ok && res.data.success) {
-          seg.result = {
-            ...res.data,
-            download_url: `http://127.0.0.1:8000${res.data.download_url}`,
-          };
-        } else {
-          const d = res.data || {};
-          const msg = d.error || d.detail || d.message || JSON.stringify(d);
-          const details = d.details || "";
-          seg.error = { message: msg + (details ? "\n" + details : "") };
-        }
-      } catch (e) {
-        seg.error = { message: e.message };
+        if (!urlRes.ok) throw new Error("Failed to get download URL");
+        cutBody.direct_url = urlRes.data.direct_link;
       }
-      seg.cutting = false;
-      renderCutUI();
+
+      const cutId = Math.random().toString(36).slice(2, 10);
+      cutBody.cut_id = cutId;
+      // Expose the id so the Stop button can address this specific cut.
+      seg.progress.cutId = cutId;
+
+      // Fire the cut request (don't await yet — start polling progress)
+      const cutPromise = api("/cut", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cutBody),
+      });
+
+      // Two loops: a fast client-side tick for the elapsed timer, and a slower
+      // server poll for the real percent + ETA + bytes-fetched. Both patch the
+      // DOM in place so typing in another segment isn't interrupted.
+      const fmtSecs = (s) => {
+        s = Math.max(0, Math.round(s));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return r ? `${m}m ${r}s` : `${m}m`;
+      };
+      const paintDom = () => {
+        const p = seg.progress;
+        if (!p) return;
+        const status = document.querySelector(`.dc-cutting[data-seg-status="${seg.id}"]`);
+        const fill = document.querySelector(`.dc-progress-fill[data-seg-fill="${seg.id}"]`);
+        const right = document.querySelector(`.dc-progress-size[data-seg="${seg.id}"]`);
+        if (status) status.textContent = `Cutting…${p.etaFormatted ? " " + p.etaFormatted : ""}`;
+        if (fill) {
+          if (p.percent != null) {
+            fill.classList.add("dc-progress-real");
+            fill.style.width = p.percent + "%";
+          }
+        }
+        if (right) {
+          right.textContent = p.bytesFetched
+            ? `${p.bytesFetched} · ${p.elapsedFormatted}`
+            : p.elapsedFormatted;
+        }
+      };
+
+      const tickInterval = setInterval(() => {
+        if (!seg.progress) return;
+        seg.progress.elapsedFormatted = fmtSecs((Date.now() - seg.progress.startedAt) / 1000);
+        paintDom();
+      }, 500);
+
+      const pollInterval = setInterval(async () => {
+        try {
+          const prog = await api(`/cut/progress/${cutId}`);
+          if (prog.ok && prog.data && seg.progress) {
+            const d = prog.data;
+            seg.progress.percent = d.percent;
+            seg.progress.bytesFetched = d.bytes_fetched_formatted || "";
+            seg.progress.etaFormatted = d.eta_seconds != null ? `~${fmtSecs(d.eta_seconds)}` : "";
+            paintDom();
+          }
+        } catch {}
+      }, 1000);
+
+      const res = await cutPromise;
+      clearInterval(pollInterval);
+      clearInterval(tickInterval);
+
+      if (res.ok && res.data.success) {
+        seg.result = {
+          ...res.data,
+          download_url: `http://127.0.0.1:8000${res.data.download_url}`,
+        };
+      } else {
+        const d = res.data || {};
+        const msg = d.error || d.detail || d.message || JSON.stringify(d);
+        const details = d.details || "";
+        seg.error = { message: msg + (details ? "\n" + details : "") };
+      }
+    } catch (e) {
+      seg.error = { message: e.message };
     }
+    seg.cutting = false;
+    seg.progress = null;
+    renderCutUI();
+  }
+
+  async function cutAll() {
+    const toCut = state.segments.filter((s) => !s.result && !s.cutting && s.end);
+    if (toCut.length === 0) return;
+    await Promise.all(toCut.map((seg) => cutOne(seg)));
   }
 
   init();
