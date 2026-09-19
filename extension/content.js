@@ -322,6 +322,7 @@
             <div class="dc-cutting" data-seg-status="${seg.id}">Cutting…${eta ? " " + esc(eta) : ""}</div>
             <div class="dc-progress-bar"><div class="${barClass}" data-seg-fill="${seg.id}" ${barStyle}></div></div>
             <div class="dc-progress-size" data-seg="${seg.id}">${rightLine}</div>
+            <button class="dc-btn dc-btn-stop" data-stop="${seg.id}">Stop</button>
           </div>`;
         }
         return `<div class="dc-seg">
@@ -390,6 +391,22 @@
     });
     const cutBtn = document.getElementById("dc-cut");
     if (cutBtn) cutBtn.addEventListener("click", cutAll);
+    body.querySelectorAll(".dc-btn-stop").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const segId = btn.dataset.stop;
+        const seg = state.segments.find((s) => s.id == segId);
+        if (!seg || !seg.progress?.cutId) return;
+        btn.disabled = true;
+        btn.textContent = "Stopping…";
+        try {
+          await api(`/cut/cancel?cut_id=${encodeURIComponent(seg.progress.cutId)}`, { method: "POST" });
+        } catch {}
+        seg.cutting = false;
+        seg.progress = null;
+        seg.error = { message: "Cancelled" };
+        renderCutUI();
+      });
+    });
     const addBtn = document.getElementById("dc-add");
     if (addBtn)
       addBtn.addEventListener("click", () => {
@@ -442,6 +459,8 @@
 
       const cutId = Math.random().toString(36).slice(2, 10);
       cutBody.cut_id = cutId;
+      // Expose the id so the Stop button can address this specific cut.
+      seg.progress.cutId = cutId;
 
       // Fire the cut request (don't await yet — start polling progress)
       const cutPromise = api("/cut", {

@@ -4,6 +4,26 @@ A running log of mistakes made while building/debugging, and what we learned. Re
 
 ---
 
+## 2026-09-19 — "Drive is throttling this file" was WiFi, again
+
+**What broke:** Two cuts stalled at ~0 MB/s. First stream took 33–177 s to even *open* against Drive, then bytes trickled in at 0.0–0.6 MB/s. Prior day on the same account and machine had cut at 25–33 MB/s.
+
+**What I told the user:** "Not the network — Drive is serving the file from cold storage because it's still processing. Small probes get through, real transfers get throttled." I pointed at the previous day's warning banner ("This video file is processing slowly due to upload quota limits") as supporting evidence.
+
+**Actual cause:** WiFi. User plugged in ethernet and the same cut ran at full speed. Everything else — the theory, the file, the account, the code, Drive — was fine.
+
+**Clues I missed:**
+- **30–60 s stream open times.** Cold storage on a remote server usually gives a fast connection with a slow byte-rate, not a slow *open*. Slow opens are classic TCP-retransmit / RF-interference symptoms on a local link.
+- **A generic Google Cloud speed probe I ran alongside the diagnosis returned ~290 bytes** and I moved on. That was the exact signal that the pipe itself was sick, not the endpoint.
+- **"Same machine as yesterday" isn't the same conditions.** I never asked whether ethernet or WiFi. The differential was on the user's side.
+
+**Learnings:**
+- **Independent network probe first, always.** Before blaming any remote system for throughput, do a real download from an unrelated fast host and measure. If *that's* slow, the local link is the problem — end of diagnosis.
+- **Match the symptom shape.** Slow *response* (30 s to first byte) ≠ slow *throughput* (bytes trickling in at 0.6 MB/s). They point at different layers. I lumped them together and reached for the remote-throttle explanation for both.
+- **"External system is limiting us" is a very seductive answer.** It absolves the code, it absolves the local setup, it explains everything, and it requires no further work. This is exactly why it deserves the highest bar of proof, not the lowest. Second time this week — same failure mode as [[trust-user-history]].
+
+---
+
 ## 2026-09-18 — "Drive is rate-limiting the account" was wrong for half a day
 
 **What broke:** Every cut across a 12-hour span returned Drive's `<title>Google Drive - Quota exceeded</title>` HTML page instead of bytes. `bytes=0-0` probes worked at 05:12; the same probe at 05:26 failed. Cuts that had worked the previous morning stopped working entirely.

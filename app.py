@@ -222,6 +222,38 @@ async def index():
             "hint": "Open a Google Drive or WeTransfer video page with the Chrome extension installed."}
 
 
+@app.post("/cut/cancel")
+async def cut_cancel(cut_id: str | None = None):
+    """Stop in-flight cut(s), kill FFmpeg, delete temp files. With `cut_id`
+    (?cut_id=…) cancels just that one; without it, cancels every active cut."""
+    cancelled = []
+    for cid, entry in list(_cut_progress.items()):
+        if entry.get("done"):
+            continue
+        if cut_id and cid != cut_id:
+            continue
+        proc = entry.get("proc")
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        for key in ("path", "progress_file"):
+            p = entry.get(key)
+            if p:
+                try:
+                    Path(p).unlink()
+                except OSError:
+                    pass
+        tok = entry.get("proxy_token")
+        if tok:
+            _proxy_registry.pop(tok, None)
+        _cut_progress.pop(cid, None)
+        cancelled.append(cid)
+    log.info("Cut cancel: cancelled %d cut(s): %s", len(cancelled), cancelled)
+    return {"cancelled": len(cancelled), "ids": cancelled}
+
+
 @app.get("/debug/tasks")
 async def debug_tasks():
     """Where is every coroutine parked right now? For diagnosing stuck streams."""
@@ -763,7 +795,9 @@ async def cut_video(request: Request):
         "-ss", _seconds_to_hms(start_sec),
         "-i", video_url,
         "-t", str(duration),
-        "-c", "copy",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
         "-movflags", "+faststart",
         "-avoid_negative_ts", "make_zero",
         # -progress writes key=value blocks to this file every ~1s. The
@@ -782,6 +816,8 @@ async def cut_video(request: Request):
             stderr=asyncio.subprocess.PIPE,
         )
         log.info("FFmpeg started: pid=%d cut_id=%s", proc.pid, cut_id)
+        # Expose the process to /cut/cancel so the popup can kill it.
+        _cut_progress[cut_id]["proc"] = proc
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
         except asyncio.TimeoutError:
@@ -944,9 +980,15 @@ async def download(filename: str):
 # Entry
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    # Windows console defaults to cp1252 and crashes on any non-ASCII print.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     log.info("Starting Drive Cutter on http://localhost:%d", PORT)
-    print(f"\n  Drive Cutter → http://localhost:{PORT}")
-    print(f"  Logs → {LOG_DIR / 'server.log'}")
+    print(f"\n  Drive Cutter -> http://localhost:{PORT}")
+    print(f"  Logs -> {LOG_DIR / 'server.log'}")
     if IDLE_TIMEOUT > 0:
         print(f"  Auto-shutdown after {IDLE_TIMEOUT}s idle\n")
     else:

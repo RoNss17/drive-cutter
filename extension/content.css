@@ -264,6 +264,21 @@
 }
 .dc-btn-retry:hover { background: #3d7ae0; }
 
+.dc-btn-stop {
+  margin-top: 8px;
+  background: transparent;
+  border-color: #3a1a1a;
+  color: #f06060;
+  padding: 5px 12px;
+  font-size: 11px;
+}
+.dc-btn-stop:hover {
+  background: #2a1010;
+  border-color: #f06060;
+  color: #f06060;
+}
+.dc-btn-stop:disabled { opacity: 0.5; cursor: default; }
+
 .dc-actions-center {
   justify-content: center;
 }
