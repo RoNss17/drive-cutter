@@ -21,20 +21,9 @@
     pageType = "wetransfer";
   }
 
-  // Pinterest: /pin/<id>/
-  if (/pinterest\.[a-z.]+\/pin\//.test(pageUrl)) {
-    pageType = "pinterest";
-  }
-
-  // X / Twitter: /<user>/status/<id>
-  if (/^https?:\/\/(x|twitter)\.com\/[^/]+\/status\//.test(pageUrl)) {
-    pageType = "x";
-  }
-
+  // Pinterest, X, and YouTube downloads live in the toolbar popup now
+  // (Alt+Shift+C), so the content script only injects on cut-flow pages.
   if (!pageType) return;
-  // Flow dispatch: cut-flow sites get the segment UI; download-flow sites get
-  // a single "Download Video" button powered by yt-dlp on the server.
-  const isDownloadFlow = (pageType === "pinterest" || pageType === "x");
 
   // API helper that goes through background service worker
   function api(path, options) {
@@ -209,8 +198,6 @@
       await loadDriveFile();
     } else if (pageType === "wetransfer") {
       await loadWeTransfer();
-    } else if (isDownloadFlow) {
-      renderDownloadUI();
     }
   }
 

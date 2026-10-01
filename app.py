@@ -957,6 +957,7 @@ _dl_progress: dict[str, dict] = {}  # dl_id -> {proc, platform, url, started, pa
 _PLATFORMS = {
     "pinterest": r"^https?://([a-z]+\.)?pinterest\.[a-z.]+/pin/",
     "x":         r"^https?://(x|twitter)\.com/[^/]+/status/",
+    "youtube":   r"^https?://((www\.|m\.)?youtube\.com/(watch|shorts/|live/)|youtu\.be/)",
 }
 
 

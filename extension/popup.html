@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <style>
   body {
-    width: 280px;
+    width: 340px;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 13px;
     background: #131313;
@@ -12,45 +12,133 @@
     margin: 0;
     padding: 14px;
   }
-  h2 { font-size: 14px; font-weight: 600; color: #fff; margin: 0 0 8px; }
-  .status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .dot.on { background: #4ade80; }
-  .dot.off { background: #f06060; }
-  .label { font-size: 12px; color: #999; }
-  .desc { font-size: 11px; color: #666; line-height: 1.4; margin-bottom: 10px; }
-  .btn {
-    display: block; width: 100%; padding: 8px; font-size: 12px; font-weight: 500;
-    background: #5b9cf5; color: #000; border: none; border-radius: 6px; cursor: pointer;
-    margin-top: 6px;
+  h2 {
+    font-size: 14px; font-weight: 600; color: #fff;
+    margin: 0 0 2px; display: flex; align-items: center; justify-content: space-between;
   }
-  .btn:first-of-type { margin-top: 0; }
+  .status-row { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .dot.on  { background: #4ade80; }
+  .dot.off { background: #f06060; }
+  .label { font-size: 11px; color: #999; }
+
+  label.field-label {
+    display: block;
+    font-size: 10px; color: #737373; text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 4px;
+  }
+  .url-input {
+    width: 100%; box-sizing: border-box;
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    font-size: 12px; padding: 7px 10px;
+    background: #0a0a0a; color: #d4d4d4;
+    border: 1px solid #252525; border-radius: 6px;
+    outline: none;
+  }
+  .url-input:focus { border-color: #5b9cf5; }
+  .url-input::placeholder { color: #4a4a4a; }
+
+  .platform-badge {
+    display: inline-block;
+    font-size: 10px; padding: 2px 7px; margin-top: 6px;
+    border-radius: 10px;
+    background: #1a2a3a; color: #5b9cf5; border: 1px solid #2b4668;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .platform-badge.unsupported { background: #2a1010; color: #f06060; border-color: #3a1a1a; }
+
+  .btn {
+    display: block; width: 100%; padding: 8px;
+    font-size: 12px; font-weight: 500;
+    background: #5b9cf5; color: #000; border: none; border-radius: 6px;
+    cursor: pointer; margin-top: 10px;
+  }
   .btn:hover { background: #3d7ae0; }
   .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.secondary {
+    background: transparent; color: #d4d4d4;
+    border: 1px solid #252525;
+  }
+  .btn.secondary:hover { border-color: #333; background: #1a1a1a; }
   .btn.stop {
-    background: transparent; color: #f06060; border: 1px solid #3a1a1a;
+    background: transparent; color: #f06060;
+    border: 1px solid #3a1a1a;
   }
   .btn.stop:hover { background: #2a1010; border-color: #f06060; color: #f06060; }
-  .open-link {
-    display: block; text-align: center; margin-top: 8px;
-    font-size: 11px; color: #5b9cf5; text-decoration: none;
+  .btn.done {
+    background: #16a34a; color: #fff; font-weight: 600; text-decoration: none;
+    text-align: center; display: block;
   }
-  .open-link:hover { text-decoration: underline; }
+  .btn.done:hover { background: #15803d; }
+
+  .progress-bar {
+    height: 3px; background: #252525; border-radius: 2px;
+    margin-top: 10px; overflow: hidden; position: relative;
+  }
+  .progress-fill {
+    height: 100%; width: 40%; background: #5b9cf5; border-radius: 2px;
+    animation: slide 1.2s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(250%); }
+  }
+  .progress-note {
+    font-size: 10px; color: #737373;
+    font-family: 'JetBrains Mono', monospace;
+    margin-top: 4px;
+  }
+
+  .hint {
+    font-size: 11px; color: #666; line-height: 1.4;
+    margin-top: 10px;
+  }
+  .hint a { color: #5b9cf5; text-decoration: none; }
+  .hint a:hover { text-decoration: underline; }
+
+  .kbd {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    padding: 1px 5px; background: #1a1a1a; border: 1px solid #2a2a2a;
+    border-radius: 3px; color: #999;
+  }
+
+  .error {
+    font-size: 11px; color: #f06060;
+    background: #2a1010; border: 1px solid #3a1a1a;
+    border-radius: 4px; padding: 6px 8px; margin-top: 10px;
+    word-break: break-word;
+  }
 </style>
 </head>
 <body>
-  <h2>Clipr</h2>
-  <div class="status">
+  <h2>
+    Clipr
+    <span class="kbd">⌥⇧C</span>
+  </h2>
+  <div class="status-row">
     <span class="dot" id="dot"></span>
     <span class="label" id="status-text">Checking…</span>
   </div>
-  <div class="desc">
-    Open a Google Drive, WeTransfer, Pinterest or X page — the panel appears
-    in the corner. The server starts automatically when needed.
+
+  <!-- Main UI (hidden until the server is up) -->
+  <div id="main" style="display:none;">
+    <label class="field-label">Video URL</label>
+    <input class="url-input" id="url" placeholder="Paste any supported URL…" spellcheck="false" autocomplete="off" />
+    <div id="badge-row"></div>
+    <div id="action-row"></div>
+    <div id="progress-row"></div>
+    <div class="hint" id="hint">
+      Supports <b>Google Drive</b>, <b>WeTransfer</b>, <b>Pinterest</b>, <b>X / Twitter</b>, and <b>YouTube</b>.
+      Drive and WeTransfer open on the page for timestamp cutting; the rest download whole.
+    </div>
   </div>
-  <button class="btn" id="start-btn" disabled>Start Server</button>
-  <button class="btn stop" id="stop-btn" style="display:none">Stop Cut</button>
-  <div class="desc" id="cancel-note" style="display:none; margin-top:8px; margin-bottom:0; color:#4ade80;"></div>
+
+  <!-- Server-off fallback -->
+  <div id="offline" style="display:none;">
+    <div class="hint" style="margin-top:0;">The local Clipr server isn't running.</div>
+    <button class="btn" id="start-btn">Start Server</button>
+  </div>
 
   <script src="popup.js"></script>
 </body>
