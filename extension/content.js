@@ -1,9 +1,9 @@
 // Detect page type and extract file info
 (function () {
-  if (document.getElementById("drive-cutter-panel")) return;
+  if (document.getElementById("clipr-panel")) return;
 
   const pageUrl = window.location.href;
-  let pageType = null;
+  let pageType = null;        // "drive" | "wetransfer" (cut flow)  OR  "pinterest" | "x" (download flow)
   let fileId = null;
 
   // Google Drive: /file/d/{id}/view
@@ -21,7 +21,20 @@
     pageType = "wetransfer";
   }
 
+  // Pinterest: /pin/<id>/
+  if (/pinterest\.[a-z.]+\/pin\//.test(pageUrl)) {
+    pageType = "pinterest";
+  }
+
+  // X / Twitter: /<user>/status/<id>
+  if (/^https?:\/\/(x|twitter)\.com\/[^/]+\/status\//.test(pageUrl)) {
+    pageType = "x";
+  }
+
   if (!pageType) return;
+  // Flow dispatch: cut-flow sites get the segment UI; download-flow sites get
+  // a single "Download Video" button powered by yt-dlp on the server.
+  const isDownloadFlow = (pageType === "pinterest" || pageType === "x");
 
   // API helper that goes through background service worker
   function api(path, options) {
@@ -41,10 +54,10 @@
 
   // Build and inject the floating panel
   const panel = document.createElement("div");
-  panel.id = "drive-cutter-panel";
+  panel.id = "clipr-panel";
   panel.innerHTML = `
     <div class="dc-header">
-      <span class="dc-logo">Drive Cutter</span>
+      <span class="dc-logo">Clipr</span>
       <button class="dc-close" id="dc-close">×</button>
     </div>
     <div class="dc-body" id="dc-body">
@@ -87,6 +100,7 @@
     wtFiles: [],
     segments: [{ id: 1, start: "00:00:00", end: "", cutting: false, result: null, error: null }],
     segmentCounter: 1,
+    download: null,  // { inProgress, dlId, lastSize, result, error }
   };
 
   function esc(s) {
@@ -195,7 +209,148 @@
       await loadDriveFile();
     } else if (pageType === "wetransfer") {
       await loadWeTransfer();
+    } else if (isDownloadFlow) {
+      renderDownloadUI();
     }
+  }
+
+  // --- Download flow (Pinterest, X) ------------------------------------------
+  function renderDownloadUI() {
+    const body = document.getElementById("dc-body");
+    const dl = state.download || {};
+    const label = pageType === "pinterest" ? "Pinterest video" : "X video";
+    const host = (new URL(pageUrl)).host;
+
+    let inner;
+    if (dl.result) {
+      inner = `
+        <div class="dc-file-info">
+          <div class="dc-fname">${esc(label)}</div>
+          <div class="dc-fsize">${esc(host)}</div>
+        </div>
+        <a href="${dl.result.download_url}" target="_blank" class="dc-btn dc-btn-done">
+          Download (${esc(dl.result.sizeFormatted || "")})
+        </a>
+        <div class="dc-actions" style="margin-top:8px;">
+          <button class="dc-btn dc-btn-sm" id="dc-restart">New download</button>
+        </div>`;
+    } else if (dl.inProgress) {
+      inner = `
+        <div class="dc-file-info">
+          <div class="dc-fname">${esc(label)}</div>
+          <div class="dc-fsize">${esc(host)}</div>
+        </div>
+        <div class="dc-seg">
+          <div class="dc-cutting" data-dl-status>Downloading…</div>
+          <div class="dc-progress-bar"><div class="dc-progress-fill"></div></div>
+          <div class="dc-progress-size" data-dl-size>${esc(dl.sizeText || "0s")}</div>
+          <button class="dc-btn dc-btn-stop" id="dc-dl-stop">Stop</button>
+        </div>`;
+    } else if (dl.error) {
+      inner = `
+        <div class="dc-file-info">
+          <div class="dc-fname">${esc(label)}</div>
+          <div class="dc-fsize">${esc(host)}</div>
+        </div>
+        <div class="dc-error">${esc(dl.error)}</div>
+        <div class="dc-actions" style="margin-top:8px;">
+          <button class="dc-btn dc-btn-cut" id="dc-dl-start">Try again</button>
+        </div>`;
+    } else {
+      inner = `
+        <div class="dc-file-info">
+          <div class="dc-fname">${esc(label)}</div>
+          <div class="dc-fsize">${esc(host)}</div>
+        </div>
+        <div class="dc-label" style="margin-top:4px;">
+          Download the video on this page as an MP4.
+        </div>
+        <div class="dc-actions">
+          <button class="dc-btn dc-btn-cut" id="dc-dl-start">Download Video</button>
+        </div>`;
+    }
+    body.innerHTML = inner;
+
+    const start = document.getElementById("dc-dl-start");
+    if (start) start.addEventListener("click", startDownload);
+    const stop = document.getElementById("dc-dl-stop");
+    if (stop) stop.addEventListener("click", stopDownload);
+    const restart = document.getElementById("dc-restart");
+    if (restart) restart.addEventListener("click", () => {
+      state.download = null;
+      renderDownloadUI();
+    });
+  }
+
+  async function startDownload() {
+    state.download = { inProgress: true, startedAt: Date.now(), sizeText: "0s" };
+    renderDownloadUI();
+
+    const res = await api("/dl/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: pageUrl, platform: pageType }),
+    });
+    if (!res.ok || !res.data?.dl_id) {
+      state.download = { error: res.data?.detail || res.data?.error || "Could not start download" };
+      renderDownloadUI();
+      return;
+    }
+    const dlId = res.data.dl_id;
+    state.download.dlId = dlId;
+
+    const fmtSecs = (s) => {
+      s = Math.max(0, Math.round(s));
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60); const r = s % 60;
+      return r ? `${m}m ${r}s` : `${m}m`;
+    };
+
+    const tickInterval = setInterval(() => {
+      const d = state.download;
+      if (!d?.inProgress) return;
+      const el = document.querySelector('[data-dl-size]');
+      const got = d.lastSize ? `${d.lastSize} · ` : "";
+      const t = fmtSecs((Date.now() - d.startedAt) / 1000);
+      if (el) el.textContent = `${got}${t}`;
+    }, 500);
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const p = await api(`/dl/progress/${dlId}`);
+        if (!p.ok || !p.data) return;
+        const d = p.data;
+        if (state.download) {
+          state.download.lastSize = d.currentFormatted;
+        }
+        if (d.done) {
+          clearInterval(pollInterval);
+          clearInterval(tickInterval);
+          if (d.error) {
+            state.download = { error: d.error };
+          } else if (d.download_url) {
+            state.download = {
+              result: {
+                download_url: `http://127.0.0.1:8000${d.download_url}`,
+                sizeFormatted: d.sizeFormatted,
+              },
+            };
+          } else {
+            state.download = { error: "Download finished but no file was produced." };
+          }
+          renderDownloadUI();
+        }
+      } catch {}
+    }, 1000);
+  }
+
+  async function stopDownload() {
+    const dlId = state.download?.dlId;
+    if (dlId) {
+      try { await api(`/dl/cancel?dl_id=${encodeURIComponent(dlId)}`, { method: "POST" }); } catch {}
+    }
+    state.download = { error: "Cancelled." };
+    renderDownloadUI();
   }
 
   async function getDriveCookies() {

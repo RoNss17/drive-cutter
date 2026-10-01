@@ -2,7 +2,7 @@
 set -e
 
 # --------------------------------------------------
-# Drive Cutter — one-time setup (macOS & Linux)
+# Clipr — one-time setup (macOS & Linux)
 # --------------------------------------------------
 #   1. Python 3.9+  — uses what you have; otherwise installs a private
 #                     copy with uv (seconds, no admin, no Homebrew/Xcode)
@@ -26,7 +26,7 @@ FFMPEG_RELEASE="https://github.com/eugeneware/ffmpeg-static/releases/download/b6
 
 echo ""
 echo "  ╔══════════════════════════════════╗"
-echo "  ║     Drive Cutter — Setup         ║"
+echo "  ║         Clipr — Setup            ║"
 echo "  ╚══════════════════════════════════╝"
 echo ""
 
@@ -157,7 +157,7 @@ mkdir -p "$NM_DIR"
 cat > "$NM_DIR/$HOST_NAME.json" <<MANIFEST
 {
   "name": "$HOST_NAME",
-  "description": "Drive Cutter — starts the local server on demand",
+  "description": "Clipr — starts the local server on demand",
   "path": "$HOST_PY",
   "type": "stdio",
   "allowed_origins": [

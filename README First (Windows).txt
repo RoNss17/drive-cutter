@@ -12,7 +12,7 @@ from a 4-hour source pulls only ~2% of the bytes.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   a) Move this whole folder somewhere permanent —
-     for example  C:\Users\<you>\Drive Cutter Windows
+     for example  C:\Users\<you>\Clipr Windows
      or anywhere under Documents.
 
      DO NOT leave it in Downloads or on the Desktop
@@ -48,7 +48,7 @@ from a 4-hour source pulls only ~2% of the bytes.
   2. HOW TO USE IT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  ⚠ Drive Cutter is NOT an app you launch.
+  ⚠ Clipr is NOT an app you launch.
     It's a panel that appears inside Chrome when
     you're viewing a Drive or WeTransfer video.
 
@@ -85,7 +85,7 @@ from a 4-hour source pulls only ~2% of the bytes.
   • The folder is in Downloads or a synced OneDrive
     location — move it somewhere stable and re-run
     install.bat.
-  • Check chrome://extensions — "Drive Cutter"
+  • Check chrome://extensions — "Clipr"
     should be listed and enabled.
 
   Note: the Windows installer is less battle-tested

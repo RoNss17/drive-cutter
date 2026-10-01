@@ -1,6 +1,7 @@
 """
-Drive Cutter — Cut segments from Google Drive / WeTransfer videos.
-Uses FFmpeg HTTP Range requests — only downloads the bytes you need.
+Clipr — Clip segments from Google Drive / WeTransfer (via FFmpeg HTTP Range
+requests, only downloading the bytes you need), and whole-video downloads from
+Pinterest / X (via yt-dlp).
 """
 
 import asyncio
@@ -9,6 +10,7 @@ import logging.handlers
 import os
 import re
 import shutil
+import sys
 import uuid
 import tempfile
 import time
@@ -106,7 +108,9 @@ async def _lifespan(_app):
     yield
 
 
-app = FastAPI(title="Drive Cutter", lifespan=_lifespan)
+app = FastAPI(title="Clipr", lifespan=_lifespan)
+
+YTDLP = shutil.which("yt-dlp") or "yt-dlp"
 
 app.add_middleware(
     CORSMiddleware,
@@ -213,13 +217,13 @@ def _parse_wetransfer_url(url):
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.1"}
+    return {"status": "ok", "version": "3.0"}
 
 
 @app.get("/")
 async def index():
-    return {"app": "Drive Cutter", "status": "running",
-            "hint": "Open a Google Drive or WeTransfer video page with the Chrome extension installed."}
+    return {"app": "Clipr", "status": "running",
+            "hint": "Open a Google Drive, WeTransfer, Pinterest or X page with the Chrome extension installed."}
 
 
 @app.post("/cut/cancel")
@@ -945,6 +949,137 @@ async def cut_progress(cut_id: str):
     }
 
 
+# ---------------------------------------------------------------------------
+# Routes — Whole-video downloads (Pinterest, X) via yt-dlp
+# ---------------------------------------------------------------------------
+_dl_progress: dict[str, dict] = {}  # dl_id -> {proc, platform, url, started, path, done}
+
+_PLATFORMS = {
+    "pinterest": r"^https?://([a-z]+\.)?pinterest\.[a-z.]+/pin/",
+    "x":         r"^https?://(x|twitter)\.com/[^/]+/status/",
+}
+
+
+@app.post("/dl/start")
+async def dl_start(request: Request):
+    """Kick off a yt-dlp download for a Pinterest/X video URL. Returns a dl_id
+    the client can poll with /dl/progress/{dl_id}."""
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    platform = (body.get("platform") or "").strip()
+    if platform not in _PLATFORMS:
+        raise HTTPException(400, f"Unknown platform: {platform!r}")
+    if not re.match(_PLATFORMS[platform], url):
+        raise HTTPException(400, f"URL doesn't look like a {platform} video URL")
+
+    dl_id = uuid.uuid4().hex[:8]
+    out_template = str(OUTPUT_DIR / f"{platform}_{dl_id}.%(ext)s")
+    cmd = [
+        YTDLP,
+        "--no-playlist",
+        "--no-warnings",
+        "--no-part",  # write directly to final filename (no .part suffix)
+        "-f", "best[ext=mp4]/best",
+        "-o", out_template,
+        url,
+    ]
+    log.info("DL start: platform=%s dl_id=%s url=%s", platform, dl_id, url[:120])
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise HTTPException(500, "yt-dlp not found. Rerun install.sh / reinstall requirements.")
+
+    _dl_progress[dl_id] = {
+        "proc": proc, "platform": platform, "url": url,
+        "started": time.time(), "path": None, "done": False, "error": None,
+    }
+
+    async def wait():
+        stdout, stderr = await proc.communicate()
+        entry = _dl_progress.get(dl_id)
+        if not entry:
+            return
+        entry["done"] = True
+        if proc.returncode != 0:
+            tail = stderr.decode(errors="replace").strip().splitlines()[-6:]
+            entry["error"] = "\n".join(tail) or f"yt-dlp exited {proc.returncode}"
+            log.error("DL failed: dl_id=%s %s", dl_id, entry["error"])
+            return
+        # Find the output file yt-dlp wrote
+        for f in OUTPUT_DIR.glob(f"{platform}_{dl_id}.*"):
+            if f.is_file() and f.suffix not in (".part", ".ytdl"):
+                entry["path"] = str(f)
+                log.info("DL complete: dl_id=%s size=%s file=%s",
+                         dl_id, _format_bytes(f.stat().st_size), f.name)
+                return
+        entry["error"] = "yt-dlp exited cleanly but produced no file"
+
+    asyncio.create_task(wait())
+    return {"dl_id": dl_id}
+
+
+@app.get("/dl/progress/{dl_id}")
+async def dl_progress(dl_id: str):
+    entry = _dl_progress.get(dl_id)
+    if not entry:
+        raise HTTPException(404, "Unknown download")
+    elapsed = time.time() - entry["started"]
+    current_size = 0
+    # yt-dlp may write to several candidate files before settling; grab the
+    # biggest one that matches the id prefix.
+    for f in OUTPUT_DIR.glob(f"{entry['platform']}_{dl_id}.*"):
+        try:
+            s = f.stat().st_size
+            if s > current_size:
+                current_size = s
+        except OSError:
+            pass
+    done = entry["done"]
+    out = {
+        "dl_id": dl_id,
+        "done": done,
+        "elapsed_seconds": round(elapsed, 1),
+        "current_size": current_size,
+        "currentFormatted": _format_bytes(current_size),
+        "error": entry.get("error"),
+    }
+    if done and entry.get("path"):
+        p = Path(entry["path"])
+        if p.exists():
+            out["download_url"] = f"/download/{p.name}"
+            out["filename"] = p.name
+            out["sizeFormatted"] = _format_bytes(p.stat().st_size)
+    return out
+
+
+@app.post("/dl/cancel")
+async def dl_cancel(dl_id: str | None = None):
+    """Kill a running yt-dlp and delete any partial file. Mirrors /cut/cancel."""
+    cancelled = []
+    for did, entry in list(_dl_progress.items()):
+        if dl_id and did != dl_id:
+            continue
+        if entry.get("done"):
+            continue
+        proc = entry.get("proc")
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        for f in OUTPUT_DIR.glob(f"{entry['platform']}_{did}.*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        _dl_progress.pop(did, None)
+        cancelled.append(did)
+    log.info("DL cancel: cancelled %d download(s): %s", len(cancelled), cancelled)
+    return {"cancelled": len(cancelled), "ids": cancelled}
+
+
 @app.get("/download/{filename}")
 async def download(filename: str):
     path = OUTPUT_DIR / filename
@@ -970,6 +1105,9 @@ async def download(filename: str):
                     except OSError:
                         pass
                 _cut_progress.pop(cid, None)
+        for did, entry in list(_dl_progress.items()):
+            if entry.get("path") == str(path):
+                _dl_progress.pop(did, None)
 
     response = FileResponse(path, filename=filename, media_type="video/mp4")
     asyncio.get_event_loop().create_task(cleanup())
@@ -986,8 +1124,8 @@ if __name__ == "__main__":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    log.info("Starting Drive Cutter on http://localhost:%d", PORT)
-    print(f"\n  Drive Cutter -> http://localhost:{PORT}")
+    log.info("Starting Clipr on http://localhost:%d", PORT)
+    print(f"\n  Clipr -> http://localhost:{PORT}")
     print(f"  Logs -> {LOG_DIR / 'server.log'}")
     if IDLE_TIMEOUT > 0:
         print(f"  Auto-shutdown after {IDLE_TIMEOUT}s idle\n")

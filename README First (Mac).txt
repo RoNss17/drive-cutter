@@ -12,7 +12,7 @@ from a 4-hour source pulls only ~2% of the bytes.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   a) Move this whole folder somewhere permanent
-     — for example your home folder (~/Drive Cutter Mac).
+     — for example your home folder (~/Clipr Mac).
      DO NOT leave it in ~/Downloads. macOS revokes
      Chrome's access to Downloads across restarts and
      the extension will silently stop working.
@@ -42,7 +42,7 @@ from a 4-hour source pulls only ~2% of the bytes.
   2. HOW TO USE IT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  ⚠ Drive Cutter is NOT an app you launch.
+  ⚠ Clipr is NOT an app you launch.
     It's a panel that appears inside Chrome when
     you're viewing a Drive or WeTransfer video.
 
@@ -77,7 +77,7 @@ from a 4-hour source pulls only ~2% of the bytes.
     since installing. Do Cmd+Q, then relaunch.
   • The folder is inside ~/Downloads — move it out
     and re-run  ./install.sh.
-  • Check chrome://extensions — "Drive Cutter"
+  • Check chrome://extensions — "Clipr"
     should be listed and enabled.
 
   Logs live in  logs/server.log  — look there first

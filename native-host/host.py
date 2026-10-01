@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Native Messaging host for Drive Cutter Chrome extension.
+Native Messaging host for Clipr Chrome extension.
 Starts the server on demand and reports status back via stdout.
 """
 import os

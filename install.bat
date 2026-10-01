@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 :: --------------------------------------------------
-:: Drive Cutter — one-time setup (Windows)
+:: Clipr — one-time setup (Windows)
 :: --------------------------------------------------
 :: Run this as: double-click, or right-click > Run as administrator
 :: Installs: Python 3, FFmpeg, venv + deps, Chrome extension setup
@@ -16,7 +16,7 @@ set "EXT_ID=cmddahdpalfapiiiepdfmelnmpcihgie"
 
 echo.
 echo   ========================================
-echo       Drive Cutter — Windows Setup
+echo       Clipr — Windows Setup
 echo   ========================================
 echo.
 
@@ -152,7 +152,7 @@ set "MANIFEST_PATH=%SCRIPT_DIR%native-host\%HOST_NAME%.json"
 (
 echo {
 echo   "name": "%HOST_NAME%",
-echo   "description": "Drive Cutter — starts the local server on demand",
+echo   "description": "Clipr — starts the local server on demand",
 echo   "path": "%HOST_BAT:\=\\%",
 echo   "type": "stdio",
 echo   "allowed_origins": [

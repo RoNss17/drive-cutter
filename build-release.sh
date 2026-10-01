@@ -21,12 +21,12 @@ stage_folder() {
   cp native-host/host.py native-host/host.bat "$DIR/native-host/"
 }
 
-stage_folder "Drive Cutter Mac"     "README First (Mac).txt"
-stage_folder "Drive Cutter Windows" "README First (Windows).txt"
+stage_folder "Clipr Mac"     "README First (Mac).txt"
+stage_folder "Clipr Windows" "README First (Windows).txt"
 
-(cd dist/stage && zip -qr "../Drive-Cutter-Mac-v$VERSION.zip" "Drive Cutter Mac" \
+(cd dist/stage && zip -qr "../Clipr-Mac-v$VERSION.zip" "Clipr Mac" \
     -x '*/install.bat' '*/native-host/host.bat' '*.DS_Store')
-(cd dist/stage && zip -qr "../Drive-Cutter-Windows-v$VERSION.zip" "Drive Cutter Windows" \
+(cd dist/stage && zip -qr "../Clipr-Windows-v$VERSION.zip" "Clipr Windows" \
     -x '*/install.sh' '*.DS_Store')
 
 rm -rf dist/stage

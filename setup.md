@@ -1,8 +1,9 @@
-# Drive Cutter
+# Clipr
 
-Cut segments from Google Drive and WeTransfer videos without downloading the full file.
+Cut segments out of Google Drive / WeTransfer videos, and download whole videos from Pinterest / X — all from a floating panel on the page.
 
-FFmpeg reads the source over HTTP Range requests, so pulling 2 minutes from a 4-hour video downloads roughly 2% of the file. No login, no API keys — for private Drive files the Chrome extension reuses your existing browser session.
+- **Drive & WeTransfer:** FFmpeg reads the source over HTTP Range requests, so pulling 2 minutes from a 4-hour video downloads roughly 2% of the file. No login, no API keys — for private Drive files the Chrome extension reuses your existing browser session.
+- **Pinterest & X:** whole-video download via `yt-dlp` under the hood. Public posts only — no cookie forwarding, nothing exported from your browser.
 
 ---
 
@@ -29,13 +30,20 @@ Then quit Chrome fully (Cmd+Q) and reopen it.
 
 ## Usage
 
-1. Open a Google Drive video page (`drive.google.com/file/d/…/view`) or a WeTransfer preview page
-2. The **Drive Cutter** panel appears bottom-right
-3. Use the ⏱ buttons to capture the playhead, or type times as `HH:MM:SS`
-4. Click **Cut** — the local server starts on demand
-5. Click **Download** when it finishes; the temp file is deleted a few seconds after download
+The **Clipr** panel appears bottom-right on any supported page. The server auto-starts.
 
-Multiple segments cut in parallel.
+**Cutting (Drive / WeTransfer):**
+1. Open a Google Drive video page or a WeTransfer preview page
+2. Use the ⏱ buttons to capture the playhead, or type times as `HH:MM:SS`
+3. Click **Cut** — multiple segments cut in parallel
+4. Click **Download** when it finishes; the temp file is deleted a few seconds after download
+
+**Downloading (Pinterest / X):**
+1. Open a Pinterest pin or an X/Twitter post that has a video
+2. Click **Download Video**
+3. Click **Download** when it finishes
+
+Supported URL shapes: `drive.google.com/file/d/*/view`, `wetransfer.com/{previews,downloads}/…`, `pinterest.com/pin/…`, `x.com/*/status/*`, `twitter.com/*/status/*`.
 
 ---
 
