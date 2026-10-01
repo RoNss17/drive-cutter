@@ -12,21 +12,22 @@ async function checkServer() {
   return false;
 }
 
-async function ensureServer() {
-  if (await checkServer()) return true;
+let lastNativeError = "";
 
+function tryNativeHost() {
   return new Promise((resolve) => {
     let port;
     try {
       port = chrome.runtime.connectNative(NATIVE_HOST);
-    } catch {
+    } catch (e) {
+      lastNativeError = e.message || "connectNative threw";
       resolve(false);
       return;
     }
 
     let settled = false;
     const timeout = setTimeout(() => {
-      if (!settled) { settled = true; resolve(false); }
+      if (!settled) { settled = true; lastNativeError = "Timeout (15s)"; resolve(false); }
     }, 15000);
 
     port.onMessage.addListener((msg) => {
@@ -42,10 +43,22 @@ async function ensureServer() {
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
+        lastNativeError = chrome.runtime.lastError?.message || "Native host disconnected";
         resolve(false);
       }
     });
   });
+}
+
+async function ensureServer() {
+  if (await checkServer()) return true;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ok = await tryNativeHost();
+    if (ok) return true;
+    if (attempt === 0) await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
 }
 
 async function proxyRequest(path, options = {}) {
@@ -58,13 +71,16 @@ async function proxyRequest(path, options = {}) {
 // Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "get-drive-cookies") {
+    // Exactly what the browser itself would send to drive.usercontent.google.com —
+    // no name filter, so newer session cookies (__Secure-*PSIDTS, *PSIDCC) are included.
+    const hosts = new Set([
+      "google.com", ".google.com",
+      "usercontent.google.com", ".usercontent.google.com",
+      "drive.usercontent.google.com", ".drive.usercontent.google.com",
+    ]);
     chrome.cookies.getAll({ domain: ".google.com" }, (cookies) => {
       const relevant = cookies
-        .filter((c) => c.name.startsWith("SID") || c.name.startsWith("HSID") ||
-                       c.name.startsWith("SSID") || c.name === "NID" ||
-                       c.name.startsWith("SAPISID") || c.name.startsWith("APISID") ||
-                       c.name === "__Secure-1PSID" || c.name === "__Secure-3PSID" ||
-                       c.name === "__Secure-1PAPISID" || c.name === "__Secure-3PAPISID")
+        .filter((c) => hosts.has(c.domain))
         .map((c) => `${c.name}=${c.value}`)
         .join("; ");
       sendResponse({ cookies: relevant });
@@ -111,7 +127,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "ensure-server") {
-    ensureServer().then((ok) => sendResponse({ ok }));
+    ensureServer().then((ok) => sendResponse({ ok, error: ok ? null : lastNativeError }));
     return true;
   }
 

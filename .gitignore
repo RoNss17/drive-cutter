@@ -4,8 +4,10 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
-client_secret.json
-token.json
-*.credentials
-native-host/com.drivecutter.host.json
+.claude/
+logs/
 dist/
+bin/
+brag-output/
+native-host/com.drivecutter.host.json
+native-host/crash.log

@@ -1,11 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Drive Cutter",
-  "version": "1.0",
-  "description": "Cut segments from Google Drive and WeTransfer videos without downloading the full file.",
+  "name": "Clipr",
+  "version": "3.1",
+  "description": "Clip segments from Google Drive or WeTransfer videos, and download whole videos from Pinterest and X — straight from the page.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvIvspykTc9M6Qn2jLrMhn2kX+M3iPbnicH1ooarMaLnlfceDuICb0wo6+kgyFJKNzTDKCXAprjnxNPL15N98I8VfPK5XDanUGivJ7y8dd46mTO5bGj9+5BsC7dVs4cFPLokCT9QX2lfXJQ6jXZDLi68I7OrC0U9hi3BPYNFNnByxsUItr1Mk2rRj2VLFbxnZKzuObKhWcxNTU6P2FwkpxGexEPIEUqpDtjx5J1VEggUO4NfjJtpTI/kdmkdPAqpSAb75lrtb8TvzLZHRucz2vfD40p+Qzr7e+klsUqiV/oRU70p8Sk+4SoF+PrKD9HE/rj45mBo9bXnrtoUMxzu5mQIDAQAB",
   "permissions": ["nativeMessaging", "activeTab", "scripting", "cookies"],
-  "host_permissions": ["http://127.0.0.1:8000/*", "https://*.google.com/*", "https://*.wetransfer.com/*"],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "https://*.google.com/*",
+    "https://*.wetransfer.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -31,5 +35,16 @@
   "action": {
     "default_popup": "popup.html",
     "default_icon": "icon48.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default":  "Alt+Shift+C",
+        "mac":      "Alt+Shift+C",
+        "windows":  "Alt+Shift+C",
+        "linux":    "Alt+Shift+C"
+      },
+      "description": "Open Clipr popup"
+    }
   }
 }
